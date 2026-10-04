@@ -1,0 +1,721 @@
+// Mobile UI: top bar, toolbar, the in-flow panel (Edit / Scan / Pages — a port of the
+// macOS inspector and thumbnail sidebar) and modal sheets (Add, Export, View, Menu).
+
+import * as M from './model.js';
+import { state, SCAN_PRESETS, DEFAULT_SCAN } from './model.js';
+import {
+  UNITS, UNIT_ORDER, PAPERS, SIZE_PRESETS, FONTS, toPoints, fromPoints, fmtUnit, paperName, isFullQuad,
+} from './geometry.js';
+import { icon } from './icons.js';
+import { view, setZoomMode, zoomBy, zoomPercent, actualScale, cssPxPerInch, calibration, canvasHooks } from './canvas.js';
+import { assets, ensureImageReady } from './imaging.js';
+import { renderPage } from './render.js';
+import { exportPDF, exportDOCX, exportPageImage } from './export.js';
+import { openCornerEditor } from './perspective.js';
+
+export const APP_VERSION = '1.0.0';
+const $ = (s) => document.querySelector(s);
+
+// ------------------------------------------------------------------ DOM helpers
+
+function h(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'html') e.innerHTML = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (k === 'style') Object.assign(e.style, v);
+    else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) e.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  return e;
+}
+const btn = (label, onclick, cls = 'btn', title) => h('button', { class: cls, onclick, 'aria-label': title || null, title: title || null, html: label });
+const section = (title, ...kids) => h('div', { class: 'section' }, title ? h('h3', {}, title) : null, ...kids);
+const row = (...kids) => h('div', { class: 'row' }, ...kids);
+
+// Controls register "refreshers" that re-read the model after every change. Panel controls
+// live in panelRefreshers; controls inside an open modal sheet live in that sheet's scope.
+let panelRefreshers = [];
+const sheetScopes = new Set();
+let scope = null;
+const refresh = (fn) => { (scope || panelRefreshers).push(fn); fn(); };
+function scoped(build) {
+  const sc = [];
+  scope = sc;
+  try { return [build(), sc]; } finally { scope = null; }
+}
+const focused = (input) => document.activeElement === input;
+
+const parseNum = (s) => {
+  const v = parseFloat(String(s).replace(',', '.').replace(/[^\d.+-]/g, ''));
+  return Number.isFinite(v) ? v : null;
+};
+
+/** Length field in the active unit (value stored in points). */
+function unitField(label, get, set, { narrow = false } = {}) {
+  const input = h('input', { type: 'text', inputmode: 'decimal', enterkeyhint: 'done', autocomplete: 'off' });
+  const unit = h('span', { class: 'unit' });
+  const commit = () => { const v = parseNum(input.value); if (v != null) set(toPoints(v, state.ui.unit)); };
+  input.addEventListener('change', commit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+  input.addEventListener('focus', () => input.select());
+  refresh(() => {
+    unit.textContent = UNITS[state.ui.unit].symbol;
+    if (!focused(input)) { const v = get(); input.value = v == null ? '' : fmtUnit(v, state.ui.unit, false); }
+  });
+  return h('div', { class: 'field' + (narrow ? ' narrow' : '') }, h('label', {}, label), input, unit);
+}
+
+function numField(label, get, set, suffix, { narrow = true, digits = 1 } = {}) {
+  const input = h('input', { type: 'text', inputmode: 'decimal', enterkeyhint: 'done', autocomplete: 'off' });
+  input.addEventListener('change', () => { const v = parseNum(input.value); if (v != null) set(v); });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+  input.addEventListener('focus', () => input.select());
+  refresh(() => { if (!focused(input)) input.value = (+get().toFixed(digits)).toString(); });
+  return h('div', { class: 'field' + (narrow ? ' narrow' : '') }, label ? h('label', {}, label) : null, input, suffix ? h('span', { class: 'unit' }, suffix) : null);
+}
+
+function slider({ label, min, max, step, get, set, neutral, fmt = (v) => v.toFixed(2) }) {
+  const input = h('input', { type: 'range', min, max, step });
+  const val = h('span', { class: 'val' });
+  input.addEventListener('input', () => set(parseFloat(input.value)));
+  // Double-tap the label to reset to neutral.
+  const lbl = h('span', { class: 'lbl', ondblclick: () => neutral != null && set(neutral) }, label);
+  refresh(() => {
+    const v = get();
+    if (!focused(input)) input.value = v;
+    val.textContent = fmt(v);
+    val.classList.toggle('changed', neutral != null && Math.abs(v - neutral) > 1e-6);
+  });
+  return h('div', { class: 'slider-row' }, lbl, input, val);
+}
+
+function toggle(label, get, set) {
+  const input = h('input', { type: 'checkbox', role: 'switch' });
+  input.addEventListener('change', () => set(input.checked));
+  refresh(() => { input.checked = !!get(); });
+  return h('label', { class: 'switch' }, h('span', {}, label), input);
+}
+
+function segmented(options, get, set) {
+  const wrap = h('div', { class: 'seg' });
+  const buttons = options.map((o) => {
+    const b = h('button', { html: (o.icon ? icon(o.icon) : '') + (o.label ? `<span>${o.label}</span>` : ''), 'aria-label': o.title || o.label, title: o.title || null, onclick: () => set(o.value) });
+    wrap.append(b);
+    return [o.value, b];
+  });
+  refresh(() => { const v = get(); buttons.forEach(([val, b]) => b.classList.toggle('on', val === v)); });
+  return wrap;
+}
+
+// ------------------------------------------------------------------ toast / dialogs / sheets
+
+let toastTimer = null;
+export function toast(msg, ms = 2600) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), ms);
+}
+
+export function sheet(title, body, { center = false, onClose, refreshScope } = {}) {
+  const root = $('#sheet-root');
+  const back = h('div', { class: 'backdrop' });
+  const card = h('div', { class: 'sheet' + (center ? ' center' : ''), role: 'dialog', 'aria-modal': 'true' },
+    center ? null : h('div', { class: 'grip' }), title ? h('h2', {}, title) : null, body);
+  if (refreshScope) sheetScopes.add(refreshScope);
+  const close = () => { back.remove(); card.remove(); if (refreshScope) sheetScopes.delete(refreshScope); onClose && onClose(); };
+  back.addEventListener('click', close);
+  // Swipe down on the grip area to dismiss.
+  let y0 = null;
+  card.addEventListener('touchstart', (e) => { y0 = card.scrollTop <= 0 ? e.touches[0].clientY : null; }, { passive: true });
+  card.addEventListener('touchmove', (e) => {
+    if (y0 == null || center) return;
+    const dy = e.touches[0].clientY - y0;
+    if (dy > 0) card.style.transform = `translateY(${dy}px)`;
+  }, { passive: true });
+  card.addEventListener('touchend', (e) => {
+    if (y0 == null || center) return;
+    const dy = e.changedTouches[0].clientY - y0;
+    card.style.transform = '';
+    if (dy > 90) close();
+    y0 = null;
+  });
+  root.append(back, card);
+  return { close, card };
+}
+
+function sheetItem(ic, title, sub, onclick, danger = false) {
+  return h('button', { class: 'sheet-item' + (danger ? ' danger' : ''), onclick },
+    h('span', { class: 'ic', html: icon(ic) }), h('span', { class: 'tx' }, h('b', {}, title), sub ? h('small', {}, sub) : null));
+}
+
+export function alertDialog(msg) {
+  const s = sheet(null, h('div', {}, h('p', {}, msg), h('div', { class: 'sheet-actions' }, btn('OK', () => s.close(), 'btn primary'))), { center: true });
+}
+
+function confirmDialog(msg, okLabel, onOK, danger = false) {
+  const s = sheet(null, h('div', {}, h('p', {}, msg), h('div', { class: 'sheet-actions' },
+    btn('Cancel', () => s.close()), btn(okLabel, () => { s.close(); onOK(); }, danger ? 'btn danger' : 'btn primary'))), { center: true });
+}
+
+function promptDialog(title, value, onOK, { inputmode = 'text' } = {}) {
+  const input = h('input', { class: 'text-input', value, inputmode, enterkeyhint: 'done', autocomplete: 'off' });
+  const ok = () => { s.close(); onOK(input.value); };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') ok(); });
+  const s = sheet(title, h('div', {}, input, h('div', { class: 'sheet-actions' }, btn('Cancel', () => s.close()), btn('OK', ok, 'btn primary'))), { center: true });
+  setTimeout(() => { input.focus(); input.select(); }, 60);
+}
+
+// ------------------------------------------------------------------ top bar & toolbar
+
+function initChrome() {
+  $('#btn-menu').innerHTML = icon('menu');
+  $('#btn-undo').innerHTML = icon('undo');
+  $('#btn-redo').innerHTML = icon('redo');
+  $('#btn-export').innerHTML = icon('share');
+  $('#panel-close').innerHTML = icon('close');
+  const tb = { add: 'add', pages: 'pages', edit: 'edit', scan: 'scan', view: 'view' };
+  document.querySelectorAll('#toolbar button').forEach((b) => { b.querySelector('i').innerHTML = icon(tb[b.dataset.tool]); });
+
+  $('#btn-undo').addEventListener('click', () => M.undo());
+  $('#btn-redo').addEventListener('click', () => M.redo());
+  $('#btn-export').addEventListener('click', openExportSheet);
+  $('#btn-menu').addEventListener('click', openMenuSheet);
+  $('#title-wrap').addEventListener('click', () => promptDialog('Document name', state.doc.title, (v) => M.rename(v)));
+  $('#panel-close').addEventListener('click', closePanel);
+  document.querySelectorAll('#toolbar button').forEach((b) => b.addEventListener('click', () => {
+    const t = b.dataset.tool;
+    if (t === 'add') openAddSheet();
+    else if (t === 'view') openViewSheet();
+    else togglePanel(t);
+  }));
+}
+
+function updateChrome() {
+  $('#doc-title').textContent = state.doc.title;
+  const P = state.doc.pages, i = M.currentPageIndex(), p = P[i];
+  const parts = [];
+  if (P.length > 1) parts.push(`Page ${i + 1} of ${P.length}`);
+  parts.push(paperName(p.w, p.h));
+  parts.push(`${zoomPercent()}%`);
+  $('#doc-sub').textContent = parts.join(' · ');
+  $('#btn-undo').disabled = !M.canUndo();
+  $('#btn-redo').disabled = !M.canRedo();
+  $('#empty-hint').hidden = !(P.length === 1 && p.elements.length === 0);
+  document.querySelectorAll('#toolbar button').forEach((b) => b.classList.toggle('on', b.dataset.tool === panelName));
+}
+
+// ------------------------------------------------------------------ in-flow panel
+
+let panelName = null, panelSig = null;
+let thumbTimer = null;
+
+function togglePanel(name) {
+  if (panelName === name) { closePanel(); return; }
+  openPanel(name);
+}
+export function openPanel(name) {
+  panelName = name; panelSig = null;
+  if (name === 'scan') state.ui.inspectorTab = 'scan';
+  if (name === 'edit') state.ui.inspectorTab = 'transform';
+  $('#panel').hidden = false;
+  updatePanel();
+  updateChrome();
+}
+function closePanel() {
+  panelName = null;
+  $('#panel').hidden = true;
+  updateChrome();
+}
+
+function signature() {
+  const el = M.selected();
+  if (panelName === 'pages') return 'pages';
+  if (panelName === 'scan') return `scan|${el?.id}|${el?.kind}|${el?.scan?.mode}|${state.ui.unit}`;
+  if (el) return `edit|${el.id}|${el.kind}|${state.ui.unit}`;
+  return `page|${state.doc.guides.map((g) => g.id).join()}|${state.ui.unit}`;
+}
+
+function updatePanel(flags) {
+  if (!panelName) return;
+  const sig = signature();
+  if (sig !== panelSig) {
+    panelSig = sig;
+    panelRefreshers = [];
+    const body = $('#panel-body');
+    const keepScroll = body.scrollTop;
+    body.replaceChildren();
+    const title = $('#panel-title');
+    title.replaceChildren();
+    if (panelName === 'pages') buildPagesPanel(body, title);
+    else if (panelName === 'scan') buildScanPanel(body, title);
+    else buildEditPanel(body, title);
+    if (sig.split('|')[1] === panelSig.split('|')[1]) body.scrollTop = keepScroll;
+  } else {
+    panelRefreshers.forEach((f) => f(flags));
+  }
+}
+
+// ---- Edit panel (Transform inspector; Page + Guides when nothing is selected)
+
+function buildEditPanel(body, title) {
+  const el0 = M.selected();
+  if (!el0) { buildPageInspector(body, title); return; }
+  const id = el0.id;
+  const cur = () => M.findElement(id)?.el;
+  const kindIcon = el0.kind === 'text' ? 'text' : el0.kind === 'pdf' ? 'file' : 'photo';
+  const name = h('span');
+  refresh(() => { name.textContent = cur()?.name || ''; });
+  title.append(h('div', { class: 'row nowrap', style: { marginBottom: 0 } },
+    h('div', { class: 'sel-name grow', html: icon(kindIcon) }, name),
+    btn(icon('duplicate'), () => M.duplicateSelected(), 'btn icon', 'Duplicate'),
+    btn(icon('trash'), () => M.deleteSelected(), 'btn icon danger', 'Delete')));
+  title.querySelector('.sel-name').append(name);
+
+  if (el0.kind === 'text') {
+    const ta = h('textarea', { class: 'text-edit', rows: 3, 'aria-label': 'Text' });
+    ta.addEventListener('input', () => M.updateText(id, { text: ta.value }));
+    refresh(() => { if (!focused(ta)) ta.value = cur()?.text ?? ''; });
+    const font = h('select', { class: 'select', 'aria-label': 'Font' }, ...FONTS.map((f) => h('option', { value: f.id }, f.id)));
+    font.addEventListener('change', () => M.updateText(id, { font: font.value }));
+    refresh(() => { font.value = cur()?.font; });
+    const color = h('input', { type: 'color', 'aria-label': 'Text color' });
+    color.addEventListener('input', () => M.updateText(id, { color: color.value }));
+    refresh(() => { if (!focused(color)) color.value = cur()?.color || '#000000'; });
+    body.append(section('Text', ta,
+      h('div', { class: 'row', style: { marginTop: '8px' } }, font, numField('', () => cur()?.size ?? 18, (v) => M.updateText(id, { size: Math.max(1, v) }), 'pt')),
+      row(color, h('div', { class: 'grow' }, segmented([
+        { value: 'left', icon: 'alLeft', title: 'Align left' }, { value: 'center', icon: 'alCenterH', title: 'Center' }, { value: 'right', icon: 'alRight', title: 'Align right' },
+      ], () => cur()?.align, (v) => M.updateText(id, { align: v }))))));
+  }
+
+  body.append(section('Position',
+    row(unitField('X', () => cur()?.x, (v) => M.setFrame(id, { x: v }, 'x')), unitField('Y', () => cur()?.y, (v) => M.setFrame(id, { y: v }, 'y')))));
+
+  const lockBtn = btn('', () => M.toggleAspectLock(), 'btn icon', 'Aspect ratio lock');
+  refresh(() => { const e = cur(); lockBtn.innerHTML = icon(e?.aspectLocked ? 'lock' : 'unlock'); lockBtn.classList.toggle('on', !!e?.aspectLocked); });
+  const presets = h('select', { class: 'select', 'aria-label': 'Size presets' },
+    h('option', { value: '' }, 'Size presets…'),
+    ...SIZE_PRESETS.map((p, i) => h('option', { value: 'p' + i }, p.label)),
+    el0.kind === 'image' ? h('option', { value: 'dpi300' }, 'Original pixel size @ 300 dpi') : null,
+    h('option', { value: 'fit' }, 'Fit to page'));
+  presets.addEventListener('change', () => {
+    const v = presets.value; presets.value = '';
+    if (v.startsWith('p')) { const p = SIZE_PRESETS[+v.slice(1)]; M.resizeFree(p.w, p.h); }
+    if (v === 'dpi300') M.setSelectedAtDPI(300);
+    if (v === 'fit') M.fitSelectedToPage();
+  });
+  body.append(section('Size',
+    h('div', { class: 'row nowrap' }, unitField('W', () => cur()?.w, (v) => M.resizeSelected({ w: v })), unitField('H', () => cur()?.h, (v) => M.resizeSelected({ h: v })), lockBtn),
+    row(presets)));
+
+  const stepLbl = h('span', { class: 'muted' });
+  refresh(() => { const u = state.ui.unit; stepLbl.textContent = `Nudge ${u === 'in' ? '1/16 in' : '1 mm'} per tap`; });
+  const nudge = (dx, dy) => () => { const s = UNITS[state.ui.unit].nudge; M.nudgeSelected(dx * s, dy * s); };
+  const pad = h('div', { class: 'nudge' },
+    btn(icon('up'), nudge(0, -1), 'btn up', 'Nudge up'), btn(icon('left'), nudge(-1, 0), 'btn left', 'Nudge left'),
+    btn(icon('down'), nudge(0, 1), 'btn down', 'Nudge down'), btn(icon('right'), nudge(1, 0), 'btn right', 'Nudge right'));
+  body.append(section('Move', h('div', { class: 'row nowrap' }, pad, h('div', { class: 'grow' }, stepLbl))));
+
+  body.append(section('Rotation',
+    h('div', { class: 'row nowrap' },
+      numField('', () => cur()?.rotation ?? 0, (v) => M.setRotation(id, v, 'rotfield'), '°'),
+      h('div', { class: 'grow' }),
+      btn(icon('rotL'), () => M.rotateSelected(-90), 'btn icon', 'Rotate 90° left'),
+      btn(icon('rotR'), () => M.rotateSelected(90), 'btn icon', 'Rotate 90° right')),
+    slider({ label: 'Angle', min: -180, max: 180, step: 1, neutral: 0, get: () => cur()?.rotation ?? 0, set: (v) => M.setRotation(id, Math.round(v)), fmt: (v) => `${Math.round(v)}°` })));
+
+  body.append(section('Opacity',
+    slider({ label: 'Opacity', min: 0, max: 1, step: 0.01, neutral: 1, get: () => cur()?.opacity ?? 1, set: (v) => M.setOpacity(id, v), fmt: (v) => `${Math.round(v * 100)}%` })));
+
+  body.append(section('Arrange',
+    h('div', { class: 'btn-group', style: { marginBottom: '8px' } },
+      btn('To Back', () => M.reorderSelected('back')), btn('Backward', () => M.reorderSelected('backward')),
+      btn('Forward', () => M.reorderSelected('forward')), btn('To Front', () => M.reorderSelected('front'))),
+    h('div', { class: 'btn-group', style: { marginBottom: '8px' } },
+      ...[['alLeft', 'left', 'Align left edge'], ['alCenterH', 'centerH', 'Center horizontally'], ['alRight', 'right', 'Align right edge'],
+        ['alTop', 'top', 'Align top edge'], ['alCenterV', 'centerV', 'Center vertically'], ['alBottom', 'bottom', 'Align bottom edge']]
+        .map(([ic, a, t]) => btn(icon(ic), () => M.align(a), 'btn icon', t))),
+    toggle('Snap to guides, edges & centers', () => state.ui.snap, (v) => M.setPref('snap', v))));
+}
+
+function buildPageInspector(body, title) {
+  title.append(h('div', { class: 'sel-name', html: icon('doc') }, h('span', {}, 'Page & Guides')));
+  const p = () => M.currentPage();
+  const info = h('div', { class: 'muted' });
+  refresh(() => { const pg = p(); info.textContent = `${paperName(pg.w, pg.h)} · ${pg.elements.length} object(s) · tap an object to edit it`; });
+  body.append(section('Page',
+    row(unitField('W', () => p().w, (v) => M.setPageSize(v, p().h)), unitField('H', () => p().h, (v) => M.setPageSize(p().w, v))),
+    paperChips(), info));
+
+  const list = h('div');
+  const guides = state.doc.guides;
+  if (!guides.length) list.append(h('p', { class: 'muted', style: { margin: '0 0 8px' } }, 'Drag from the top ruler for a horizontal guide, or the left ruler for a vertical one. Drag a guide off the page to delete it.'));
+  for (const g of guides) {
+    list.append(h('div', { class: 'row nowrap' },
+      unitField(g.axis === 'v' ? 'X' : 'Y', () => state.doc.guides.find((q) => q.id === g.id)?.pos, (v) => M.moveGuide(g.id, v)),
+      btn(icon('close'), () => M.removeGuide(g.id), 'btn icon', 'Remove guide')));
+  }
+  body.append(section('Guides',
+    toggle('Show guides', () => state.ui.showGuides, (v) => M.setPref('showGuides', v)),
+    toggle('Snap to guides, edges & centers', () => state.ui.snap, (v) => M.setPref('snap', v)),
+    list, guides.length ? row(btn('Clear All Guides', () => M.clearGuides(), 'btn danger')) : null));
+}
+
+function paperChips() {
+  const wrap = h('div', { class: 'chips', style: { marginBottom: '8px' } });
+  const chips = PAPERS.map((paper) => {
+    const c = h('button', { class: 'chip', onclick: () => M.setPaper(paper) }, paper.name);
+    wrap.append(c);
+    return [paper, c];
+  });
+  const orient = h('button', { class: 'chip', onclick: () => M.toggleOrientation() });
+  wrap.append(orient);
+  refresh(() => {
+    const pg = M.currentPage();
+    chips.forEach(([paper, c]) => {
+      const on = (Math.abs(paper.w - pg.w) < 1 && Math.abs(paper.h - pg.h) < 1) || (Math.abs(paper.w - pg.h) < 1 && Math.abs(paper.h - pg.w) < 1);
+      c.classList.toggle('on', on);
+    });
+    orient.textContent = pg.w > pg.h ? '↻ Landscape' : '↻ Portrait';
+  });
+  return wrap;
+}
+
+// ---- Scan panel (Document Scan inspector)
+
+const MODE_INFO = {
+  original: 'No document processing — adjustments only.',
+  colorScan: 'Flattens shadows and removes paper yellowing while keeping logos and photos in color.',
+  blackWhite: 'Turns gray paper pure white and boosts ink to solid black.',
+  grayscale: 'Neutral gray scan with even lighting.',
+};
+
+function buildScanPanel(body, title) {
+  const el0 = M.selected();
+  title.append(h('div', { class: 'sel-name', html: icon('scan') }, h('span', {}, 'Document Scan')));
+  if (!el0 || el0.kind !== 'image') {
+    body.append(section(null,
+      h('p', { class: 'muted' }, 'Select a photo on the page, or scan a new document. Scan Enhance finds the page edges, straightens the paper and cleans up the lighting.'),
+      h('div', { class: 'btn-group' },
+        btn(icon('camera') + 'Scan Document', () => pickFiles('camera', true), 'btn primary'),
+        btn(icon('photo') + 'From Photos', () => pickFiles('photos', true), 'btn'))));
+    return;
+  }
+  const id = el0.id;
+  const cur = () => M.findElement(id)?.el;
+  const S = () => ({ ...DEFAULT_SCAN, ...(cur()?.scan || {}) });
+  const set = (patch, key) => M.setScan(id, { ...S(), ...patch }, key);
+
+  // Keystone / corners preview
+  const cv = h('canvas', { class: 'quad-preview' });
+  const asset = assets.get(el0.asset);
+  let img = null;
+  ensureImageReady(asset).then(() => { img = new Image(); img.onload = draw; img.src = asset.proxyUrl; });
+  function draw() {
+    const e = cur(); if (!e || !img || !img.complete) return;
+    const dpr = window.devicePixelRatio || 1, W = cv.clientWidth || 300, H = cv.clientHeight || 150;
+    cv.width = W * dpr; cv.height = H * dpr;
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const k = Math.min((W - 16) / img.naturalWidth, (H - 16) / img.naturalHeight);
+    const iw = img.naturalWidth * k, ih = img.naturalHeight * k, ox = (W - iw) / 2, oy = (H - ih) / 2;
+    ctx.drawImage(img, ox, oy, iw, ih);
+    const q = e.quad || [[0, 0], [1, 0], [1, 1], [0, 1]];
+    ctx.beginPath();
+    q.forEach(([x, y], i) => (i ? ctx.lineTo : ctx.moveTo).call(ctx, ox + x * iw, oy + y * ih));
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(245,166,35,.15)'; ctx.fill();
+    ctx.strokeStyle = '#f5a623'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.stroke();
+    ctx.setLineDash([]);
+    q.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(ox + x * iw, oy + y * ih, 4.5, 0, 7); ctx.fillStyle = '#fff'; ctx.fill(); ctx.stroke(); });
+  }
+  let lastQuad = '';
+  refresh(() => { const q = JSON.stringify(cur()?.quad || null); if (q !== lastQuad) { lastQuad = q; draw(); } });
+  const resetBtn = btn('Reset', () => M.applyPerspective(id, null), 'btn');
+  refresh(() => { resetBtn.hidden = isFullQuad(cur()?.quad); });
+  body.append(section('Keystone / Corners', cv,
+    h('div', { class: 'btn-group', style: { marginTop: '8px' } },
+      btn(icon('wand') + 'Scan Enhance', () => M.scanEnhance(id), 'btn primary'),
+      btn(icon('corners') + 'Edit Corners', () => openCornerEditor(id), 'btn'),
+      resetBtn)));
+
+  const desc = h('p', { class: 'muted', style: { margin: '8px 0 4px' } });
+  refresh(() => { desc.textContent = MODE_INFO[S().mode]; });
+  body.append(section('Scan Mode',
+    segmented([
+      { value: 'original', label: 'Original' }, { value: 'colorScan', label: 'Color' },
+      { value: 'blackWhite', label: 'B&W' }, { value: 'grayscale', label: 'Gray' },
+    ], () => S().mode, (mode) => M.setScan(id, SCAN_PRESETS[mode], 'mode')),
+    desc));
+
+  if (el0.scan?.mode === 'blackWhite') {
+    body.append(section('Black & White',
+      toggle('Hard threshold (1-bit)', () => S().hardThreshold, (v) => set({ hardThreshold: v }, 'hard')),
+      slider({ label: 'Threshold', min: 0.1, max: 0.9, step: 0.01, neutral: 0.55, get: () => S().threshold, set: (v) => set({ threshold: v }, 'threshold') })));
+  }
+
+  const resetAll = btn('Reset All Adjustments', () => M.setScan(id, { ...DEFAULT_SCAN, mode: S().mode }, 'reset'), 'btn');
+  refresh(() => { const s = S(); resetAll.disabled = M.isIdentitySettings({ ...s, mode: 'original' }); });
+  body.append(section('Adjustments',
+    slider({ label: 'Exposure', min: -2, max: 2, step: 0.05, neutral: 0, get: () => S().exposure, set: (v) => set({ exposure: v }, 'exposure'), fmt: (v) => `${v >= 0 ? '+' : ''}${v.toFixed(2)} EV` }),
+    slider({ label: 'Contrast', min: 0.5, max: 2, step: 0.01, neutral: 1, get: () => S().contrast, set: (v) => set({ contrast: v }, 'contrast') }),
+    slider({ label: 'Saturation', min: 0, max: 2, step: 0.01, neutral: 1, get: () => S().saturation, set: (v) => set({ saturation: v }, 'saturation') }),
+    slider({ label: 'Gamma', min: 0.3, max: 3, step: 0.01, neutral: 1, get: () => S().gamma, set: (v) => set({ gamma: v }, 'gamma') }),
+    slider({ label: 'Sharpness', min: 0, max: 2, step: 0.01, neutral: 0, get: () => S().sharpness, set: (v) => set({ sharpness: v }, 'sharpness') }),
+    row(resetAll)));
+}
+
+// ---- Pages panel (thumbnail sidebar + page setup)
+
+const thumbCache = new Map();   // page id → { sig, canvas }
+let renderEpoch = 0;
+
+function buildPagesPanel(body, title) {
+  title.append(h('div', { class: 'sel-name', html: icon('pages') }, h('span', {}, 'Pages')));
+  const strip = h('div', { class: 'thumbs' });
+  const pid = () => state.ui.pageId;
+  const actions = h('div', { class: 'btn-group', style: { marginBottom: '6px' } },
+    btn(icon('pageAdd'), () => M.addPage(pid()), 'btn icon', 'Insert page after current'),
+    btn(icon('duplicate'), () => M.duplicatePage(pid()), 'btn icon', 'Duplicate page'),
+    btn(icon('rotL'), () => M.rotatePage(pid(), false), 'btn icon', 'Rotate page left'),
+    btn(icon('rotR'), () => M.rotatePage(pid(), true), 'btn icon', 'Rotate page right'),
+    btn(icon('left'), () => M.movePage(pid(), -1), 'btn icon', 'Move page earlier'),
+    btn(icon('right'), () => M.movePage(pid(), 1), 'btn icon', 'Move page later'),
+    btn(icon('trash'), () => confirmDialog('Delete this page?', 'Delete', () => M.deletePage(pid()), true), 'btn icon danger', 'Delete page'));
+  const p = () => M.currentPage();
+  body.append(section(null, strip, actions));
+  body.append(section('Page Size', paperChips(),
+    row(unitField('W', () => p().w, (v) => M.setPageSize(v, p().h)), unitField('H', () => p().h, (v) => M.setPageSize(p().w, v)))));
+
+  let lastOrder = '';
+  refresh((flags) => {
+    const order = state.doc.pages.map((q) => q.id).join() + '|' + pid();
+    if (order !== lastOrder) { lastOrder = order; rebuildStrip(strip); }
+    if (!flags || flags.has('doc') || flags.has('render')) {
+      if (flags && flags.has('render')) renderEpoch++;
+      clearTimeout(thumbTimer);
+      thumbTimer = setTimeout(() => updateThumbs(strip), 250);
+    }
+  });
+}
+
+function rebuildStrip(strip) {
+  strip.replaceChildren();
+  state.doc.pages.forEach((pg, i) => {
+    const th = 104, tw = Math.round(th * pg.w / pg.h);
+    let c = thumbCache.get(pg.id)?.canvas;
+    if (!c) { c = h('canvas'); thumbCache.set(pg.id, { sig: null, canvas: c }); }
+    c.style.width = `${tw}px`; c.style.height = `${th}px`;
+    const t = h('button', { class: 'thumb' + (pg.id === state.ui.pageId ? ' on' : ''), onclick: () => M.selectPage(pg.id), 'aria-label': `Page ${i + 1}` }, c, h('span', {}, String(i + 1)));
+    strip.append(t);
+    if (pg.id === state.ui.pageId) requestAnimationFrame(() => t.scrollIntoView({ inline: 'nearest', block: 'nearest' }));
+  });
+  updateThumbs(strip);
+}
+
+let thumbBusy = false;
+async function updateThumbs() {
+  if (thumbBusy) { clearTimeout(thumbTimer); thumbTimer = setTimeout(updateThumbs, 300); return; }
+  thumbBusy = true;
+  try {
+    for (const pg of state.doc.pages) {
+      if (panelName !== 'pages') break;
+      const entry = thumbCache.get(pg.id);
+      if (!entry) continue;
+      const sig = JSON.stringify(pg) + renderEpoch;
+      if (entry.sig === sig) continue;
+      entry.sig = sig;
+      const dpr = window.devicePixelRatio || 1;
+      const scale = (104 * dpr) / pg.h;
+      const src = await renderPage(pg, scale);
+      entry.canvas.width = src.width; entry.canvas.height = src.height;
+      entry.canvas.getContext('2d').drawImage(src, 0, 0);
+    }
+  } finally { thumbBusy = false; }
+}
+
+// ------------------------------------------------------------------ Add sheet & file pickers
+
+let pickOpts = {};
+export function pickFiles(kind, autoScan = false) {
+  pickOpts = { autoScan };
+  $({ camera: '#pick-camera', photos: '#pick-photos', files: '#pick-files' }[kind]).click();
+}
+function initPickers() {
+  for (const id of ['#pick-camera', '#pick-photos', '#pick-files']) {
+    const input = $(id);
+    input.addEventListener('change', async () => {
+      const files = [...input.files];
+      input.value = '';
+      if (!files.length) return;
+      await M.importFiles(files, pickOpts);
+      if (pickOpts.autoScan && M.selected()?.kind === 'image') openPanel('scan');
+    });
+  }
+}
+
+function openAddSheet() {
+  const s = sheet('Add', h('div', { class: 'sheet-list' },
+    sheetItem('scan', 'Scan Document', 'Take a photo — edges, perspective and lighting are fixed automatically', () => { s.close(); pickFiles('camera', true); }),
+    sheetItem('camera', 'Take Photo', 'Place a photo as-is', () => { s.close(); pickFiles('camera'); }),
+    sheetItem('photo', 'Photo Library', 'Choose one or more photos', () => { s.close(); pickFiles('photos'); }),
+    sheetItem('file', 'Files', 'Images or PDF documents (each PDF page becomes a page)', () => { s.close(); pickFiles('files'); }),
+    sheetItem('text', 'Text Box', 'Add a line of text', () => { s.close(); M.addText(); openPanel('edit'); focusText(); }),
+    sheetItem('pageAdd', 'New Page', 'Blank page after the current one', () => { s.close(); M.addPage(); })));
+}
+
+function focusText() {
+  setTimeout(() => { const ta = document.querySelector('#panel-body textarea'); if (ta) { ta.focus(); ta.select(); } }, 80);
+}
+
+// ------------------------------------------------------------------ Export sheet
+
+function openExportSheet() {
+  const body = h('div');
+  const s = sheet('Export', body);
+  const list = h('div', { class: 'sheet-list' },
+    sheetItem('pdf', 'PDF', 'Exact page sizes · full-resolution scans · PDF pages stay vector', () => run('pdf')),
+    sheetItem('word', 'Word (.docx)', 'Pictures and text boxes placed exactly on each page', () => run('docx')),
+    sheetItem('photo', 'Current page as image', 'JPEG at 300 dpi — save to Photos or print', () => run('image')));
+  body.append(list);
+
+  async function run(kind) {
+    const bar = h('div');
+    const label = h('p', { class: 'muted' }, 'Preparing…');
+    body.replaceChildren(label, h('div', { class: 'progress' }, bar));
+    const progress = (f) => { bar.style.width = `${Math.round(f * 100)}%`; };
+    let file;
+    try {
+      await M.saveNow();
+      if (kind === 'pdf') { label.textContent = 'Building PDF…'; file = await exportPDF(progress); }
+      else if (kind === 'docx') { label.textContent = 'Building Word document…'; file = await exportDOCX(progress); }
+      else { label.textContent = 'Rendering page…'; file = await exportPageImage(M.currentPage(), M.currentPageIndex() + 1); }
+    } catch (e) {
+      console.error(e);
+      s.close();
+      alertDialog(`Export failed: ${e.message || e}`);
+      return;
+    }
+    progress(1);
+    const size = file.size > 1e6 ? `${(file.size / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1e3))} KB`;
+    body.replaceChildren(
+      h('div', { class: 'sheet-item', style: { pointerEvents: 'none' } },
+        h('span', { class: 'ic', html: icon(kind === 'pdf' ? 'pdf' : kind === 'docx' ? 'word' : 'photo') }),
+        h('span', { class: 'tx' }, h('b', {}, file.name), h('small', {}, size))),
+      h('div', { class: 'sheet-actions' },
+        btn(icon('share') + 'Share / Save', () => shareFile(file), 'btn primary'),
+        btn('Download', () => downloadFile(file), 'btn')),
+      h('p', { class: 'muted', style: { marginTop: '10px', textAlign: 'center' } }, 'Share opens the iOS sheet: Save to Files, Print, AirDrop, Mail…'));
+  }
+}
+
+async function shareFile(file) {
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: file.name }); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  downloadFile(file);
+}
+
+function downloadFile(file) {
+  const url = URL.createObjectURL(file);
+  const a = h('a', { href: url, download: file.name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 120000);
+}
+
+// ------------------------------------------------------------------ View sheet
+
+function openViewSheet() {
+  const mark = (m, pct) => (view.mode === m && (pct == null || view.percent === pct) ? ' ✓' : '');
+  const s = sheet(`Zoom · ${zoomPercent()}%`, h('div', { class: 'sheet-list' },
+    sheetItem('fitW', 'Fit Width' + mark('fitWidth'), null, () => { s.close(); setZoomMode('fitWidth'); }),
+    sheetItem('fit', 'Fit Page' + mark('fitPage'), null, () => { s.close(); setZoomMode('fitPage'); }),
+    sheetItem('actual', '100% — Actual Size' + mark('actual'), 'One inch on screen = one real inch', () => { s.close(); setZoomMode('actual'); }),
+    h('div', { class: 'btn-group', style: { padding: '6px 10px' } },
+      ...[50, 200, 400].map((p) => btn(`${p}%`, () => { s.close(); setZoomMode('percent', p); })),
+      btn(icon('zoomOut'), () => { zoomBy(0.8); s.close(); }, 'btn icon', 'Zoom out'),
+      btn(icon('zoomIn'), () => { zoomBy(1.25); s.close(); }, 'btn icon', 'Zoom in')),
+    sheetItem('ruler', 'Calibrate Actual Size…', 'Match the screen to a real card or ruler', () => { s.close(); openCalibration(); })));
+}
+
+function openCalibration() {
+  let k = calibration();
+  const card = h('div', { class: 'calib-card' });
+  const val = h('span', { class: 'val' });
+  const sizeCard = () => {
+    const s = (cssPxPerInch() / 72) * k;
+    card.style.width = `${toPoints(85.6, 'mm') * s}px`;
+    card.style.height = `${toPoints(53.98, 'mm') * s}px`;
+    val.textContent = `${Math.round(k * 1000) / 10}%`;
+  };
+  const range = h('input', { type: 'range', min: 0.7, max: 1.3, step: 0.002, value: k });
+  range.addEventListener('input', () => { k = parseFloat(range.value); sizeCard(); });
+  const s = sheet('Calibrate Actual Size', h('div', {},
+    h('p', { class: 'muted' }, 'Hold a bank card (or any ID-1 card) against the screen and drag until the outline matches its edges.'),
+    h('div', { class: 'calib-stage' }, card),
+    h('div', { class: 'slider-row' }, h('span', { class: 'lbl' }, 'Scale'), range, val),
+    h('div', { class: 'sheet-actions' },
+      btn('Reset', () => { k = 1; range.value = 1; sizeCard(); }),
+      btn('Save', () => { localStorage.setItem('calibration', String(k)); s.close(); setZoomMode('actual'); toast('Saved — 100% now matches real size.'); }, 'btn primary'))));
+  sizeCard();
+}
+
+// ------------------------------------------------------------------ Menu sheet
+
+function openMenuSheet() {
+  let s;
+  const [content, sc] = scoped(() => h('div', {},
+    h('div', { class: 'sheet-list' },
+      sheetItem('doc', 'Rename Document', state.doc.title, () => { s.close(); promptDialog('Document name', state.doc.title, (v) => M.rename(v)); }),
+      sheetItem('pageAdd', 'New Document', 'Start over with a blank page', () => {
+        s.close();
+        confirmDialog('Start a new document? The current one will be cleared — export it first if you need it.', 'New Document', () => M.newDocument(), true);
+      }),
+      sheetItem('ruler', 'Calibrate Actual Size', 'Make 100% zoom match real paper', () => { s.close(); openCalibration(); }),
+      sheetItem('home', 'Install on iPhone', 'Add to Home Screen for a full-screen app that works offline', () => { s.close(); openInstallHelp(); })),
+    section('Units', segmented(UNIT_ORDER.map((u) => ({ value: u, label: u })), () => state.ui.unit, (u) => M.setPref('unit', u))),
+    section(null,
+      toggle('Snap to guides, edges & centers', () => state.ui.snap, (v) => M.setPref('snap', v)),
+      toggle('Show guides', () => state.ui.showGuides, (v) => M.setPref('showGuides', v))),
+    h('p', { class: 'muted', style: { textAlign: 'center', marginTop: '10px' } },
+      `DocPrint Studio for iPhone · v${APP_VERSION} · your work is saved on this device automatically`)));
+  s = sheet('DocPrint Studio', content, { refreshScope: sc });
+}
+
+function openInstallHelp() {
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  sheet('Install on iPhone', h('div', {},
+    standalone
+      ? h('p', {}, 'You are already running DocPrint Studio from your Home Screen. ✓')
+      : h('div', {},
+        h('p', {}, '1. Open this page in Safari.'),
+        h('p', {}, '2. Tap the Share button (square with an arrow).'),
+        h('p', {}, '3. Choose “Add to Home Screen”, then “Add”.')),
+    h('p', { class: 'muted' }, 'The app then opens full-screen, works offline and keeps your document between launches.')));
+}
+
+// ------------------------------------------------------------------ wiring
+
+export function initUI() {
+  initChrome();
+  initPickers();
+  M.hooks.toast = toast;
+  M.hooks.alert = alertDialog;
+  M.hooks.busy = (on) => { $('#busy').hidden = !on; };
+  canvasHooks.editText = (id) => { M.select(id); openPanel('edit'); focusText(); };
+  canvasHooks.changed = (flags) => {
+    updateChrome();
+    updatePanel(flags);
+    sheetScopes.forEach((sc) => sc.forEach((f) => f(flags)));
+  };
+  updateChrome();
+}

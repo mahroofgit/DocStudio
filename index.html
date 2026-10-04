@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="DocPrint">
+  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)">
+  <meta name="description" content="Document layout and scan clean-up for iPhone: unwarp photos of paper, place them at exact physical sizes, export PDF or Word.">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="icons/favicon-32.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="css/app.css">
+  <title>DocPrint Studio</title>
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <button class="icon-btn" id="btn-menu" aria-label="Menu"></button>
+      <button id="title-wrap" aria-label="Rename document">
+        <span id="doc-title">Untitled</span>
+        <span id="doc-sub"></span>
+      </button>
+      <button class="icon-btn" id="btn-undo" aria-label="Undo"></button>
+      <button class="icon-btn" id="btn-redo" aria-label="Redo"></button>
+      <button class="icon-btn accent" id="btn-export" aria-label="Export"></button>
+    </header>
+
+    <main id="editor">
+      <button id="ruler-corner" aria-label="Change units">mm</button>
+      <canvas id="ruler-top" aria-label="Horizontal ruler — drag down to add a guide"></canvas>
+      <canvas id="ruler-left" aria-label="Vertical ruler — drag right to add a guide"></canvas>
+      <div id="workspace">
+        <div id="page"></div>
+        <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div id="empty-hint" hidden>
+          <p>Tap <b>Add</b> to scan a document,<br>place photos or open a PDF.</p>
+        </div>
+        <div id="busy" hidden><span class="spinner"></span><span id="busy-text">Working…</span></div>
+      </div>
+    </main>
+
+    <section id="panel" hidden>
+      <div id="panel-head">
+        <div id="panel-title"></div>
+        <button class="icon-btn small" id="panel-close" aria-label="Close panel"></button>
+      </div>
+      <div id="panel-body"></div>
+    </section>
+
+    <nav id="toolbar">
+      <button data-tool="add"><i></i><span>Add</span></button>
+      <button data-tool="pages"><i></i><span>Pages</span></button>
+      <button data-tool="edit"><i></i><span>Edit</span></button>
+      <button data-tool="scan"><i></i><span>Scan</span></button>
+      <button data-tool="view"><i></i><span>View</span></button>
+    </nav>
+  </div>
+
+  <div id="sheet-root"></div>
+  <div id="persp" hidden></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <input type="file" id="pick-camera" accept="image/*" capture="environment" hidden>
+  <input type="file" id="pick-photos" accept="image/*" multiple hidden>
+  <input type="file" id="pick-files" accept="image/*,application/pdf,.pdf,.heic,.heif,.jpg,.jpeg,.png,.tif,.tiff" multiple hidden>
+
+  <noscript>DocPrint Studio needs JavaScript.</noscript>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

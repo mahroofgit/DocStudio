@@ -4,6 +4,7 @@
 import { fontInfo, wrapText, LINE_HEIGHT, BASELINE } from './geometry.js';
 import { getDisplay, fullResCanvas, assets } from './imaging.js';
 import { pdfPreviewAsync, renderPdfPage } from './pdfsupport.js';
+import { isMarkup, drawMarkupCanvas } from './markup.js';
 
 const measureCtx = document.createElement('canvas').getContext('2d');
 const baselineCache = new Map();
@@ -75,6 +76,9 @@ export async function renderPage(page, scale, { fullRes = false } = {}) {
     try {
       if (el.kind === 'text') {
         drawTextLocal(ctx, el);
+      } else if (isMarkup(el)) {
+        ctx.translate(-el.w / 2, -el.h / 2);
+        drawMarkupCanvas(ctx, el);
       } else if (el.kind === 'image') {
         let src = null;
         if (fullRes) src = await fullResCanvas(el);

@@ -84,6 +84,17 @@ export function readImageMeta(buf) {
         } else if (marker === 0xffda) break;
         p += 2 + len;
       }
+    } else if (v.getUint16(0) === 0x4949 || v.getUint16(0) === 0x4d4d) {                // TIFF
+      const le = v.getUint16(0) === 0x4949;
+      const ifd = v.getUint32(4, le), count = v.getUint16(ifd, le);
+      let xres = null, unit = 2;
+      for (let i = 0; i < count; i++) {
+        const e = ifd + 2 + i * 12, tag = v.getUint16(e, le);
+        if (tag === 0x0112) meta.orientation = v.getUint16(e + 8, le);
+        if (tag === 0x011a) { const off = v.getUint32(e + 8, le); const den = v.getUint32(off + 4, le); if (den) xres = v.getUint32(off, le) / den; }
+        if (tag === 0x0128) unit = v.getUint16(e + 8, le);
+      }
+      if (xres && xres > 1) meta.dpi = unit === 3 ? xres * 2.54 : xres;
     } else if (v.getUint32(0) === 0x89504e47) {
       let p = 8;
       while (p + 8 < v.byteLength) {
@@ -209,7 +220,7 @@ export function getDisplay(el) {
 export function whenDisplay(el) {
   if (isFullQuad(el.quad) && isIdentityScan(el.scan)) {
     const a = assets.get(el.asset);
-    return ensureImageReady(a).then(() => ({ w: a.proxyW, h: a.proxyH }));
+    return ensureImageReady(a).then(() => ({ url: a.proxyUrl, w: a.proxyW, h: a.proxyH }));
   }
   const key = displayKey(el);
   if (cache.has(key)) return Promise.resolve(cache.get(key));

@@ -11,6 +11,7 @@ import { zipStore } from './zip.js';
 import { zlibDeflate, packBits, encodeGrayPNG } from './png.js';
 import { encryptPDF } from './pdfcrypt.js';
 import { recognizeWords } from './ocr.js';
+import { isMarkup, drawList, pdfPathOps, drawMarkupCanvas, markupPad, hexToRgb01 } from './markup.js';
 
 // ------------------------------------------------------------------ options
 
@@ -342,6 +343,8 @@ async function buildPDF(pages, o, title, job, { searchable = false } = {}) {
       const rot = el.rotation || 0;
       if (el.kind === 'text') {
         await drawPdfText(pdfPage, { ...el, color: adjustedColor(el.color, o.colorMode) }, H, font, out, { rgb, degrees, placement });
+      } else if (isMarkup(el)) {
+        drawPdfMarkup(L, pdfPage, ctx, el, H, o);
       } else if (vectorPDF(el, o)) {
         const src = await srcDoc(el.asset);
         const sp = src.getPage(el.pageIndex);
@@ -380,6 +383,50 @@ async function buildPDF(pages, o, title, job, { searchable = false } = {}) {
     }
   }
   return out.save({ useObjectStreams: false });
+}
+
+/** Element-local coordinates (origin at the frame's top-left, Y down, in points) → PDF page. */
+function localMatrix(el, H) {
+  const phi = (-(el.rotation || 0) * Math.PI) / 180, c = Math.cos(phi), s = Math.sin(phi);
+  const cx = el.x + el.w / 2, cy = H - (el.y + el.h / 2);
+  return [c, s, s, -c, cx - c * el.w / 2 - s * el.h / 2, cy - s * el.w / 2 + c * el.h / 2];
+}
+
+/** Shapes and drawings as vector paths (highlighter multiplies like a real marker). */
+function drawPdfMarkup(L, pdfPage, ctx, el, H, o) {
+  const opacity = el.opacity ?? 1;
+  const ops = [L.pushGraphicsState(), L.concatTransformationMatrix(...localMatrix(el, H)),
+    L.setLineCap(L.LineCapStyle.Round), L.setLineJoin(L.LineJoinStyle.Round)];
+  for (const d of drawList(el, el.w, el.h, (c) => adjustedColor(c, o.colorMode))) {
+    ops.push(L.pushGraphicsState());
+    const alpha = opacity * (d.alpha ?? 1);
+    if (alpha < 0.999 || d.multiply) {
+      const gs = { Type: 'ExtGState', ca: alpha, CA: alpha };
+      if (d.multiply) gs.BM = 'Multiply';
+      ops.push(L.setGraphicsState(pdfPage.node.newExtGState('GS', ctx.obj(gs))));
+    }
+    ops.push(...pdfPathOps(L, d.path));
+    if (d.fill) ops.push(L.setFillingRgbColor(...hexToRgb01(d.fill)), L.fill());
+    else ops.push(L.setStrokingRgbColor(...hexToRgb01(d.stroke)), L.setLineWidth(d.width), L.stroke());
+    ops.push(L.popGraphicsState());
+  }
+  ops.push(L.popGraphicsState());
+  pdfPage.pushOperators(...ops);
+}
+
+/** Shapes and drawings as a transparent PNG (for Word), plus the padded frame it covers. */
+async function markupImage(el, o) {
+  const pad = markupPad(el);
+  const frame = { ...el, x: el.x - pad, y: el.y - pad, w: el.w + 2 * pad, h: el.h + 2 * pad };
+  const scale = effectiveDPI(o) / 72;
+  const c = newCanvas(Math.ceil(frame.w * scale), Math.ceil(frame.h * scale));
+  const g = c.getContext('2d');
+  g.scale(scale, scale);
+  g.translate(pad, pad);
+  drawMarkupCanvas(g, el, (col) => adjustedColor(col, o.colorMode));
+  const png = new Uint8Array(await (await canvasToBlob(c, 'image/png')).arrayBuffer());
+  c.width = c.height = 0;
+  return { png, frame };
 }
 
 /** OCR'd words drawn invisibly over the element so the PDF can be searched, selected and copied. */
@@ -523,7 +570,13 @@ async function buildDOCX(pages, o, title, job) {
     for (let z = 0; z < page.elements.length; z++) {
       const el = page.elements[z];
       if (el.kind === 'text') frames += textFrame(el);
-      else {
+      else if (isMarkup(el)) {
+        const { png, frame } = await markupImage(el, o);
+        const n = media.length + 1;
+        const relID = `rIdImg${n}`, fileName = `image${n}.png`;
+        media.push({ fileName, data: png, relID });
+        anchors += anchorXML(frame, relID, drawingID++, z, fileName);
+      } else {
         const prep = await prepare(el, o);
         const pic = prep.kind === 'bits' ? { data: await prep.png(), png: true } : { data: prep.bytes, png: false };
         const n = media.length + 1;
@@ -633,6 +686,9 @@ async function renderPageRaster(page, o, job, { compressed = false, maxPixels = 
     ctx.globalAlpha = el.opacity ?? 1;
     if (el.kind === 'text') {
       drawTextLocal(ctx, { ...el, color: adjustedColor(el.color, o.colorMode) });
+    } else if (isMarkup(el)) {
+      ctx.translate(-el.w / 2, -el.h / 2);
+      drawMarkupCanvas(ctx, el, (c) => adjustedColor(c, o.colorMode));
     } else if (compressed && vectorPDF(el, o)) {
       const pc = await renderPdfPage(assets.get(el.asset), el.pageIndex, Math.max(el.w, el.h) * scale);
       ctx.drawImage(pc, -el.w / 2, -el.h / 2, el.w, el.h);

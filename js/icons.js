@@ -46,6 +46,16 @@ const P = {
   zoomIn: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M8 11h6M11 8v6"/>',
   zoomOut: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M8 11h6"/>',
   actual: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M8 10v4M12 10v4M16 10v4"/>',
+  cursor: '<path d="M6 3.5l12.5 9.2-5.6.9 3.3 6.4-2.5 1.3-3.3-6.4-4.4 3.8z"/>',
+  rect: '<rect x="4" y="6" width="16" height="12" rx="1.5"/>',
+  oval: '<ellipse cx="12" cy="12" rx="8.5" ry="6.5"/>',
+  line: '<path d="M5 19L19 5"/>',
+  arrow: '<path d="M5 19L18.5 5.5M10.5 5.5h8v8"/>',
+  highlighter: '<path d="M9 14l-3.5 3.5V20h5l2-2"/><path d="M9 14l7.5-9.5 4 3.5L13 17.5z"/><path d="M4 21h16" stroke-width="2.4" opacity=".45"/>',
+  pen: '<path d="M4 20l1-4.5L16 4.5a2.1 2.1 0 013 3L8 18.5z"/><path d="M14 6.5l3 3"/>',
+  markup: '<path d="M3.5 20.5c3-1 4.5-4 7.5-4 2.5 0 2 3 5 3 2 0 3-1.5 4.5-3"/><path d="M14 3.5l4 4-7.5 7.5H6.5v-4z"/>',
+  center: '<rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
+  menuDots: '<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
 };
 
 export function icon(name, cls = 'i') {

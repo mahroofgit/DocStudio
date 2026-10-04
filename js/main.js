@@ -2,7 +2,7 @@
 
 import { initCanvas } from './canvas.js';
 import { initUI } from './ui.js';
-import { loadSaved } from './model.js';
+import { loadSaved, saveNow } from './model.js';
 import { store } from './store.js';
 
 async function start() {
@@ -11,7 +11,19 @@ async function start() {
   await loadSaved();
   store.persist();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-    navigator.serviceWorker.register('sw.js').catch((e) => console.warn('service worker', e));
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloading = false;
+    // A new version took over: reload once so every file comes from the same release.
+    navigator.serviceWorker.addEventListener('controllerchange', async () => {
+      if (!hadController || reloading) return;
+      reloading = true;
+      await saveNow();
+      location.reload();
+    });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+      // Check for a new release whenever the app comes back to the foreground.
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+    }).catch((e) => console.warn('service worker', e));
   }
 }
 

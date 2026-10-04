@@ -8,9 +8,12 @@ import {
 } from './geometry.js';
 import { getDisplay } from './imaging.js';
 import { pdfPreview } from './pdfsupport.js';
+import { drawList, svgPath, isMarkup, tool as toolInfo, smoothPath, isLinear, HIGHLIGHT_ALPHA, TOOLS } from './markup.js';
+const TOOLS_BY_KEY = Object.fromEntries(TOOLS.map((t) => [t.key, t.id]));
 
 export const view = { s: 1, px: 0, py: 0, mode: 'fitPage', percent: 100 };
-export const canvasHooks = { editText: () => {}, changed: () => {} };
+export const canvasHooks = { editText: () => {}, changed: () => {}, contextMenu: () => {}, pageCreated: () => {} };
+export const pointerPos = { x: null, y: null };
 
 let ws, pageEl, overlay, rulerTop, rulerLeft, cornerBtn;
 const nodes = new Map();
@@ -161,6 +164,7 @@ export function render(flags) {
   });
   for (const [id, n] of nodes) if (!alive.has(id)) { n.root.remove(); nodes.delete(id); }
 
+  ws.classList.toggle('drawing', state.ui.tool !== 'select');
   drawOverlay();
   drawRulers();
   cornerBtn.textContent = UNITS[state.ui.unit].symbol;
@@ -177,6 +181,9 @@ function ensureNode(el) {
   if (el.kind === 'text') {
     inner = document.createElement('div');
     inner.className = 'txt';
+  } else if (isMarkup(el)) {
+    inner = document.createElementNS(svgNS, 'svg');
+    inner.setAttribute('class', 'mk');
   } else {
     inner = document.createElement('img');
     inner.draggable = false;
@@ -194,6 +201,21 @@ function updateNode(n, el, s) {
   st.width = `${el.w * s}px`; st.height = `${el.h * s}px`;
   st.transform = el.rotation ? `rotate(${el.rotation}deg)` : '';
   st.opacity = el.opacity ?? 1;
+  if (isMarkup(el)) {
+    const key = JSON.stringify([el.shape || el.ink, el.w, el.h, s]);
+    if (n.key !== key) {
+      n.key = key;
+      // Strokes may reach outside the frame (line caps, arrowheads): the SVG overflows visibly.
+      n.inner.setAttribute('width', Math.max(1, el.w * s)); n.inner.setAttribute('height', Math.max(1, el.h * s));
+      n.inner.innerHTML = drawList(el, el.w, el.h).map((op) => {
+        const d = svgPath(op.path, s);
+        if (op.stroke) return `<path d="${d}" fill="none" stroke="${op.stroke}" stroke-width="${op.width * s}" stroke-linecap="round" stroke-linejoin="round"${op.alpha != null && op.alpha < 1 ? ` stroke-opacity="${op.alpha}"` : ''}/>`;
+        return `<path d="${d}" fill="${op.fill}"/>`;
+      }).join('');
+      n.root.classList.toggle('multiply', !!(el.ink && el.ink.highlighter));
+    }
+    return;
+  }
   if (el.kind === 'text') {
     const f = fontInfo(el.font);
     const key = `${el.text}|${el.font}|${el.size * s}|${el.color}|${el.align}`;
@@ -229,6 +251,7 @@ function drawOverlay() {
   if (snapLines.x != null) { const x = view.px + snapLines.x * view.s; h += `<line class="snapline" x1="${x}" y1="0" x2="${x}" y2="${H}"/>`; }
   if (snapLines.y != null) { const y = view.py + snapLines.y * view.s; h += `<line class="snapline" x1="0" y1="${y}" x2="${W}" y2="${y}"/>`; }
 
+  h += drawingPreview();
   const el = M.selected();
   if (el) {
     const pts = corners(el, el.rotation).map(([x, y]) => toScreen(x, y));
@@ -296,11 +319,14 @@ function drawRulers() {
   const colors = {
     bg: css.getPropertyValue('--ruler-bg').trim(), page: css.getPropertyValue('--ruler-page').trim(),
     tick: css.getPropertyValue('--ruler-tick').trim(), sel: css.getPropertyValue('--ruler-sel').trim(),
+    guide: css.getPropertyValue('--guide').trim(), pointer: css.getPropertyValue('--sel').trim(),
   };
-  drawRuler(rulerTop, true, view.px, page.w, bb && [bb.x, bb.x + bb.w]);
-  drawRuler(rulerLeft, false, view.py, page.h, bb && [bb.y, bb.y + bb.h]);
+  // The top ruler marks vertical guides (constant X) and vice versa.
+  const marks = (axis) => (state.ui.showGuides ? state.doc.guides.filter((g) => g.axis === axis).map((g) => g.pos) : []);
+  drawRuler(rulerTop, true, view.px, page.w, bb && [bb.x, bb.x + bb.w], marks('v'), pointerPos.x);
+  drawRuler(rulerLeft, false, view.py, page.h, bb && [bb.y, bb.y + bb.h], marks('h'), pointerPos.y);
 
-  function drawRuler(cv, horizontal, origin, extent, selRange) {
+  function drawRuler(cv, horizontal, origin, extent, selRange, guides, pointer) {
     const dpr = window.devicePixelRatio || 1;
     const W = cv.clientWidth, H = cv.clientHeight;
     if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
@@ -336,6 +362,23 @@ function drawRulers() {
       }
     }
     ctx.stroke();
+    // Guide markers.
+    ctx.fillStyle = colors.guide;
+    for (const g of guides) {
+      const p = origin + g * s;
+      ctx.beginPath();
+      if (horizontal) { ctx.moveTo(p - 4, H - 7); ctx.lineTo(p + 4, H - 7); ctx.lineTo(p, H - 1); }
+      else { ctx.moveTo(W - 7, p - 4); ctx.lineTo(W - 7, p + 4); ctx.lineTo(W - 1, p); }
+      ctx.closePath(); ctx.fill();
+    }
+    // Pointer / finger position.
+    if (pointer != null) {
+      const p = Math.round(origin + pointer * s) + 0.5;
+      ctx.strokeStyle = colors.pointer;
+      ctx.beginPath();
+      if (horizontal) { ctx.moveTo(p, 0); ctx.lineTo(p, H); } else { ctx.moveTo(0, p); ctx.lineTo(W, p); }
+      ctx.stroke();
+    }
   }
 }
 
@@ -369,13 +412,14 @@ function hitElement(x, y) {
   const [px, py] = [(x - view.px) / view.s, (y - view.py) / view.s];
   for (let i = page.elements.length - 1; i >= 0; i--) {
     const el = page.elements[i];
-    if (hitTest(el, el.rotation, px, py, 4 / view.s)) return el;
+    if (hitTest(el, el.rotation, px, py, (isMarkup(el) ? 10 : 4) / view.s)) return el;
   }
   return null;
 }
 
 function onDown(e) {
   if (e.button > 0) return;
+  if (e.target.closest && e.target.closest('#tool-pill, #busy')) return;   // floating controls
   ws.setPointerCapture(e.pointerId);
   const [x, y] = wsPoint(e);
   pointers.set(e.pointerId, { x, y });
@@ -383,6 +427,11 @@ function onDown(e) {
   if (pointers.size > 2) return;
 
   const base = { pointerId: e.pointerId, sx: x, sy: y, t: performance.now(), moved: false };
+  if (state.ui.tool !== 'select') {
+    const a = clampToPage(toPage(e.clientX, e.clientY));
+    op = { ...base, type: 'draw', tool: state.ui.tool, a, b: a, points: [a], shift: e.shiftKey };
+    return;
+  }
   const sel = M.selected();
   const handle = sel && hitHandle(sel, x, y);
   if (handle) {
@@ -395,6 +444,11 @@ function onDown(e) {
   if (el) {
     M.select(el.id);
     op = { ...base, type: 'move', id: el.id, start: { x: el.x, y: el.y } };
+    // Long press = the element's context menu (like right-click on the Mac).
+    const lp = op;
+    lp.timer = setTimeout(() => {
+      if (op === lp && !lp.moved) { op = null; navigator.vibrate?.(10); canvasHooks.contextMenu(lp.id); }
+    }, 550);
     return;
   }
   op = { ...base, type: 'pan', px: view.px, py: view.py };
@@ -413,9 +467,20 @@ function onMove(e) {
   const p = pointers.get(e.pointerId);
   const [x, y] = wsPoint(e);
   if (p) { p.x = x; p.y = y; }
+  if (e.currentTarget === ws && (p || e.pointerType === 'mouse' || e.pointerType === 'pen')) setPointer(toPage(e.clientX, e.clientY));
   if (!op) return;
   if (op.type === 'pinch') { pinchMove(); return; }
   if (e.pointerId !== op.pointerId) return;
+
+  if (op.type === 'draw') {
+    const pt = clampToPage(toPage(e.clientX, e.clientY));
+    op.moved = op.moved || Math.hypot(x - op.sx, y - op.sy) >= 4;
+    op.b = constrained(op, pt, e.shiftKey || state.ui.constrain);
+    const last = op.points[op.points.length - 1];
+    if (toolInfo(op.tool).freehand && Math.hypot(pt[0] - last[0], pt[1] - last[1]) >= 0.5 / Math.max(view.s, 0.01)) op.points.push(pt);
+    drawOverlay();
+    return;
+  }
 
   if (op.type === 'guide') {
     const [px, py] = toPage(e.clientX, e.clientY);
@@ -432,6 +497,7 @@ function onMove(e) {
   if (!op.moved) {
     if (Math.hypot(dxs, dys) < 5) return;
     op.moved = true;
+    clearTimeout(op.timer);
     if (op.type !== 'pan') M.checkpoint();
   }
   const dx = dxs / view.s, dy = dys / view.s;
@@ -474,12 +540,20 @@ function onMove(e) {
 
 function onUp(e) {
   pointers.delete(e.pointerId);
+  if (e.pointerType === 'touch' && !pointers.size) setPointer(null);
   if (!op) return;
   if (op.type === 'pinch') { if (pointers.size < 2) op = null; return; }
   if (e.pointerId !== op.pointerId) return;
   const o = op;
   op = null;
+  clearTimeout(o.timer);
   snapLines = { x: null, y: null };
+
+  if (o.type === 'draw') {
+    if (e.type === 'pointerup') finishDrawing(o);
+    drawOverlay();
+    return;
+  }
 
   if (o.type === 'guide') {
     const g = state.doc.guides.find((q) => q.id === o.id);
@@ -490,7 +564,12 @@ function onUp(e) {
   }
   if (!o.moved && e.type === 'pointerup') {
     const now = performance.now();
-    if (o.type === 'pan') M.select(null);
+    if (o.type === 'pan') {
+      // Double-tap empty space = Fit Page.
+      if (lastTap.id === 'empty' && now - lastTap.time < 320) { setZoomMode('fitPage'); lastTap = { time: 0, id: null }; return; }
+      lastTap = { time: now, id: 'empty' };
+      M.select(null);
+    }
     if (o.type === 'move') {
       const f = M.findElement(o.id);
       if (f && f.el.kind === 'text' && lastTap.id === o.id && now - lastTap.time < 350) canvasHooks.editText(o.id);
@@ -501,6 +580,7 @@ function onUp(e) {
 }
 
 function cancelOp() {
+  if (op) clearTimeout(op.timer);
   if (op && op.moved && op.start && (op.type === 'move' || op.type === 'resize' || op.type === 'rotate')) {
     M.updateElement(op.id, (el) => Object.assign(el, op.start));
   }
@@ -532,6 +612,87 @@ function pinchMove() {
   render(new Set(['view']));
 }
 
+// ------------------------------------------------------------------ markup drawing
+
+function clampToPage([x, y]) {
+  const p = M.currentPage();
+  return [Math.min(p.w, Math.max(0, x)), Math.min(p.h, Math.max(0, y))];
+}
+
+/** Constrain (⇧ or the "Perfect shapes" switch): squares / circles, and 45° lines. */
+function constrained(o, p, on) {
+  if (!on) return p;
+  const [ax, ay] = o.a, dx = p[0] - ax, dy = p[1] - ay;
+  if (o.tool === 'rectangle' || o.tool === 'ellipse') {
+    const side = Math.max(Math.abs(dx), Math.abs(dy));
+    return clampToPage([ax + (dx < 0 ? -side : side), ay + (dy < 0 ? -side : side)]);
+  }
+  if (o.tool === 'line' || o.tool === 'arrow') {
+    const ang = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4), len = Math.hypot(dx, dy);
+    return clampToPage([ax + Math.cos(ang) * len, ay + Math.sin(ang) * len]);
+  }
+  return p;
+}
+
+/** Shapes and text return to Select when placed; pen and highlighter stay active. */
+function finishDrawing(o) {
+  const a = o.a, b = o.b, dragged = Math.hypot(b[0] - a[0], b[1] - a[1]) * view.s >= 4;
+  const t = toolInfo(o.tool);
+  if (o.tool === 'text') {
+    const r = dragged
+      ? { x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), w: Math.max(40, Math.abs(b[0] - a[0])), h: Math.max(20, Math.abs(b[1] - a[1])) }
+      : { x: a[0], y: a[1], w: 200, h: 40 };
+    M.setTool('select');
+    const id = M.addText(r);
+    canvasHooks.editText(id);
+  } else if (o.tool === 'rectangle' || o.tool === 'ellipse') {
+    if (dragged) M.addShape(t.shape, a, b);
+    else M.addShape(t.shape, [a[0] - 60, a[1] - 40], [a[0] + 60, a[1] + 40]);
+    M.setTool('select');
+  } else if (o.tool === 'line' || o.tool === 'arrow') {
+    M.addShape(t.shape, a, dragged ? b : [a[0] + 120, a[1]]);
+    M.setTool('select');
+  } else if (t.freehand) {
+    M.addInk(o.points.length > 1 ? o.points : [a], o.tool === 'highlighter');
+  }
+}
+
+/** Live preview of the stroke / shape being drawn (screen coordinates). */
+function drawingPreview() {
+  if (!op || op.type !== 'draw') return '';
+  const st = state.ui.markupStyle;
+  const [ax, ay] = op.a, [bx, by] = op.b;
+  if (op.tool === 'text') {
+    const [x0, y0] = toScreen(Math.min(ax, bx), Math.min(ay, by));
+    return `<rect class="draft" x="${x0}" y="${y0}" width="${Math.abs(bx - ax) * view.s}" height="${Math.abs(by - ay) * view.s}"/>`;
+  }
+  if (toolInfo(op.tool).freehand) {
+    const hl = op.tool === 'highlighter';
+    const d = svgPath(smoothPath(op.points.map(([x, y]) => toScreen(x, y))));
+    return `<path d="${d}" fill="none" stroke="${hl ? st.highlighterColor : st.color}" stroke-opacity="${hl ? HIGHLIGHT_ALPHA : 1}" stroke-width="${(hl ? st.highlighterWidth : st.penWidth) * view.s}" stroke-linecap="round" stroke-linejoin="round" style="${hl ? 'mix-blend-mode:multiply' : ''}"/>`;
+  }
+  const kind = toolInfo(op.tool).shape;
+  const x = Math.min(ax, bx), y = Math.min(ay, by), w = Math.max(0.01, Math.abs(bx - ax)), h = Math.max(0.01, Math.abs(by - ay));
+  const shape = { kind, stroke: st.color, fill: kind === 'line' || kind === 'arrow' ? null : st.fill, lineWidth: st.lineWidth, cornerRadius: 0,
+    start: [(ax - x) / w, (ay - y) / h], end: [(bx - x) / w, (by - y) / h], arrowAtStart: false, arrowAtEnd: true };
+  if (!isLinear(shape)) { shape.start = [0, 0]; shape.end = [1, 1]; }
+  const [sx, sy] = toScreen(x, y);
+  const body = drawList({ kind: 'shape', shape }, w, h).map((o) => (o.stroke
+    ? `<path d="${svgPath(o.path, view.s)}" fill="none" stroke="${o.stroke}" stroke-width="${o.width * view.s}" stroke-linecap="round" stroke-linejoin="round"/>`
+    : `<path d="${svgPath(o.path, view.s)}" fill="${o.fill}"/>`)).join('');
+  return `<g transform="translate(${sx},${sy})">${body}</g>`;
+}
+
+// ------------------------------------------------------------------ pointer readout (status bar + rulers)
+
+function setPointer(p) {
+  const same = p ? pointerPos.x === p[0] && pointerPos.y === p[1] : pointerPos.x == null;
+  if (same) return;
+  pointerPos.x = p ? p[0] : null; pointerPos.y = p ? p[1] : null;
+  drawRulers();
+  canvasHooks.changed(new Set(['pointer']));
+}
+
 function onWheel(e) {
   e.preventDefault();
   const [x, y] = wsPoint(e);
@@ -554,7 +715,11 @@ function onKey(e) {
   if (mod && e.key === '-') { e.preventDefault(); zoomBy(0.8); return; }
   if (mod && e.key === '0') { e.preventDefault(); setZoomMode('actual'); return; }
   if (e.key === 'Backspace' || e.key === 'Delete') { if (M.selected()) { e.preventDefault(); M.deleteSelected(); } return; }
-  if (e.key === 'Escape') { M.select(null); return; }
+  if (e.key === 'Escape') { if (state.ui.tool !== 'select') M.setTool('select'); else M.select(null); return; }
+  if (!mod && !e.altKey && e.key.length === 1) {
+    const t = TOOLS_BY_KEY[e.key.toLowerCase()];
+    if (t) { e.preventDefault(); M.setTool(t); return; }
+  }
   const step = UNITS[state.ui.unit].nudge * (e.shiftKey ? 10 : 1);
   const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
   if (d && M.selected()) { e.preventDefault(); M.nudgeSelected(d[0], d[1]); }

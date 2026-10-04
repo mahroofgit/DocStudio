@@ -40,7 +40,9 @@
           <p>Tap <b>Add</b> to scan a document,<br>place photos or open a PDF.</p>
         </div>
         <div id="busy" hidden><span class="spinner"></span><span id="busy-text">Working…</span></div>
+        <div id="tool-pill" hidden></div>
       </div>
+      <div id="statusbar" aria-live="off"></div>
     </main>
 
     <section id="panel" hidden>
@@ -55,6 +57,7 @@
       <button data-tool="add"><i></i><span>Add</span></button>
       <button data-tool="pages"><i></i><span>Pages</span></button>
       <button data-tool="edit"><i></i><span>Edit</span></button>
+      <button data-tool="markup"><i></i><span>Markup</span></button>
       <button data-tool="scan"><i></i><span>Scan</span></button>
       <button data-tool="view"><i></i><span>View</span></button>
     </nav>

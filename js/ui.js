@@ -12,8 +12,10 @@ import { assets, ensureImageReady } from './imaging.js';
 import { renderPage } from './render.js';
 import { openExporter } from './exportui.js';
 import { openCornerEditor } from './perspective.js';
+import { TOOLS, PALETTE, tool as toolInfo, isMarkup } from './markup.js';
+import { pointerPos } from './canvas.js';
 
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.2.0';
 const $ = (s) => document.querySelector(s);
 
 // ------------------------------------------------------------------ DOM helpers
@@ -81,15 +83,39 @@ function slider({ label, min, max, step, get, set, neutral, fmt = (v) => v.toFix
   const input = h('input', { type: 'range', min, max, step });
   const val = h('span', { class: 'val' });
   input.addEventListener('input', () => set(parseFloat(input.value)));
-  // Double-tap the label to reset to neutral.
+  // Reset button appears when the value differs from neutral (like the Mac inspector).
+  const reset = h('button', { class: 'reset', 'aria-label': `Reset ${label}`, title: 'Reset', html: icon('undo'), onclick: () => set(neutral) });
   const lbl = h('span', { class: 'lbl', ondblclick: () => neutral != null && set(neutral) }, label);
   refresh(() => {
     const v = get();
     if (!focused(input)) input.value = v;
     val.textContent = fmt(v);
-    val.classList.toggle('changed', neutral != null && Math.abs(v - neutral) > 1e-6);
+    const changed = neutral != null && Math.abs(v - neutral) > 1e-6;
+    val.classList.toggle('changed', changed);
+    reset.hidden = !changed;
   });
-  return h('div', { class: 'slider-row' }, lbl, input, val);
+  return h('div', { class: 'slider-row' }, lbl, input, h('span', { class: 'val-wrap' }, val, reset));
+}
+
+/** Colour swatches (macOS Markup palette) + a custom colour well; `allowNone` adds "no fill". */
+function colorRow(get, set, allowNone = false) {
+  const wrap = h('div', { class: 'swatches' });
+  const items = [];
+  const add = (c) => {
+    const b = h('button', { class: 'swatch' + (c ? '' : ' none'), style: c ? { background: c } : {}, 'aria-label': c || 'No fill', onclick: () => set(c) });
+    wrap.append(b); items.push([c, b]);
+  };
+  if (allowNone) add(null);
+  PALETTE.forEach(add);
+  const well = h('input', { type: 'color', class: 'well', 'aria-label': 'Custom colour' });
+  well.addEventListener('input', () => set(well.value));
+  wrap.append(well);
+  refresh(() => {
+    const cur = get();
+    items.forEach(([c, b]) => b.classList.toggle('on', (c || null) === (cur ? cur.toLowerCase() : null)));
+    if (!focused(well) && cur) well.value = cur;
+  });
+  return wrap;
 }
 
 function toggle(label, get, set) {
@@ -178,7 +204,10 @@ function initChrome() {
   $('#btn-redo').innerHTML = icon('redo');
   $('#btn-export').innerHTML = icon('share');
   $('#panel-close').innerHTML = icon('close');
-  const tb = { add: 'add', pages: 'pages', edit: 'edit', scan: 'scan', view: 'view' };
+  const tb = { add: 'add', pages: 'pages', edit: 'edit', markup: 'markup', scan: 'scan', view: 'view' };
+  $('#tool-pill').addEventListener('click', (e) => { if (e.target.closest('[data-done]')) M.setTool('select'); else openPanel('markup'); });
+  // iOS can leave the page scrolled after the keyboard closes; put it back.
+  document.addEventListener('focusout', () => setTimeout(() => { if (!document.activeElement || document.activeElement === document.body) window.scrollTo(0, 0); }, 50));
   document.querySelectorAll('#toolbar button').forEach((b) => { b.querySelector('i').innerHTML = icon(tb[b.dataset.tool]); });
 
   $('#btn-undo').addEventListener('click', () => M.undo());
@@ -198,15 +227,30 @@ function initChrome() {
 function updateChrome() {
   $('#doc-title').textContent = state.doc.title;
   const P = state.doc.pages, i = M.currentPageIndex(), p = P[i];
-  const parts = [];
-  if (P.length > 1) parts.push(`Page ${i + 1} of ${P.length}`);
-  parts.push(paperName(p.w, p.h));
-  parts.push(`${zoomPercent()}%`);
-  $('#doc-sub').textContent = parts.join(' · ');
+  const u = state.ui.unit;
+  $('#doc-sub').textContent = `Page ${i + 1} of ${P.length} · ${fmtUnit(p.w, u, false)} × ${fmtUnit(p.h, u)}`;
+  updateStatus();
+  const t = state.ui.tool;
+  const pill = $('#tool-pill');
+  pill.hidden = t === 'select';
+  if (t !== 'select') {
+    const info = toolInfo(t);
+    pill.innerHTML = `${icon(info.icon)}<span>${info.label}</span><button class="done" data-done>Done</button>`;
+  }
   $('#btn-undo').disabled = !M.canUndo();
   $('#btn-redo').disabled = !M.canRedo();
   $('#empty-hint').hidden = !(P.length === 1 && p.elements.length === 0);
   document.querySelectorAll('#toolbar button').forEach((b) => b.classList.toggle('on', b.dataset.tool === panelName));
+}
+
+/** Status bar: pointer position, selection size and zoom (like the Mac window's bottom bar). */
+function updateStatus() {
+  const u = state.ui.unit, parts = [];
+  if (pointerPos.x != null) parts.push(`X ${fmtUnit(pointerPos.x, u)}   Y ${fmtUnit(pointerPos.y, u)}`);
+  const el = M.selected();
+  if (el) parts.push(`${el.name}: ${fmtUnit(el.w, u, false)} × ${fmtUnit(el.h, u)}`);
+  const sb = $('#statusbar');
+  sb.replaceChildren(h('span', { class: 'grow' }, parts.join('   ·   ')), h('span', {}, `${zoomPercent()}%`));
 }
 
 // ------------------------------------------------------------------ in-flow panel
@@ -234,16 +278,18 @@ function closePanel() {
 
 function signature() {
   const el = M.selected();
+  const guides = state.doc.guides.map((g) => g.id).join();
   if (panelName === 'pages') return 'pages';
   if (panelName === 'scan') return `scan|${el?.id}|${el?.kind}|${el?.scan?.mode}|${state.ui.unit}`;
-  if (el) return `edit|${el.id}|${el.kind}|${state.ui.unit}`;
-  return `page|${state.doc.guides.map((g) => g.id).join()}|${state.ui.unit}`;
+  if (panelName === 'markup') return `markup|${el?.id}|${el?.kind}|${state.ui.tool}|${el?.shape?.kind}`;
+  return `edit|${el?.id}|${el?.kind}|${state.ui.unit}|${guides}|${state.ui.tool}|${el?.shape?.kind}`;
 }
 
 function updatePanel(flags) {
   if (!panelName) return;
   const sig = signature();
   if (sig !== panelSig) {
+    const sameSubject = panelSig && sig.split('|').slice(0, 2).join() === panelSig.split('|').slice(0, 2).join();
     panelSig = sig;
     panelRefreshers = [];
     const body = $('#panel-body');
@@ -253,8 +299,9 @@ function updatePanel(flags) {
     title.replaceChildren();
     if (panelName === 'pages') buildPagesPanel(body, title);
     else if (panelName === 'scan') buildScanPanel(body, title);
+    else if (panelName === 'markup') buildMarkupPanel(body, title);
     else buildEditPanel(body, title);
-    if (sig.split('|')[1] === panelSig.split('|')[1]) body.scrollTop = keepScroll;
+    body.scrollTop = sameSubject ? keepScroll : 0;
   } else {
     panelRefreshers.forEach((f) => f(flags));
   }
@@ -262,12 +309,21 @@ function updatePanel(flags) {
 
 // ---- Edit panel (Transform inspector; Page + Guides when nothing is selected)
 
+function elementIcon(el) {
+  if (el.kind === 'text') return 'text';
+  if (el.kind === 'pdf') return 'file';
+  if (el.kind === 'shape') return { rectangle: 'rect', ellipse: 'oval', line: 'line', arrow: 'arrow' }[el.shape.kind];
+  if (el.kind === 'ink') return el.ink.highlighter ? 'highlighter' : 'pen';
+  return 'photo';
+}
+
 function buildEditPanel(body, title) {
   const el0 = M.selected();
+  markupStyleSection(body);
   if (!el0) { buildPageInspector(body, title); return; }
   const id = el0.id;
   const cur = () => M.findElement(id)?.el;
-  const kindIcon = el0.kind === 'text' ? 'text' : el0.kind === 'pdf' ? 'file' : 'photo';
+  const kindIcon = elementIcon(el0);
   const name = h('span');
   refresh(() => { name.textContent = cur()?.name || ''; });
   title.append(h('div', { class: 'row nowrap', style: { marginBottom: 0 } },
@@ -359,14 +415,23 @@ function buildEditPanel(body, title) {
       ...[['alLeft', 'left', 'Align left edge'], ['alCenterH', 'centerH', 'Center horizontally'], ['alRight', 'right', 'Align right edge'],
         ['alTop', 'top', 'Align top edge'], ['alCenterV', 'centerV', 'Center vertically'], ['alBottom', 'bottom', 'Align bottom edge']]
         .map(([ic, a, t]) => btn(icon(ic), () => M.align(a), 'btn icon', t))),
+    h('div', { class: 'btn-group', style: { marginBottom: '8px' } },
+      btn(icon('center') + 'Center on Page', () => { M.align('centerH'); M.align('centerV'); }, 'btn')),
     toggle('Snap to guides, edges & centers', () => state.ui.snap, (v) => M.setPref('snap', v))));
+
+  pageAndGuides(body);
 }
 
 function buildPageInspector(body, title) {
   title.append(h('div', { class: 'sel-name', html: icon('doc') }, h('span', {}, 'Page & Guides')));
+  pageAndGuides(body);
+}
+
+/** Page and Guides sections (always at the bottom of the Edit panel, like the Mac inspector). */
+function pageAndGuides(body) {
   const p = () => M.currentPage();
   const info = h('div', { class: 'muted' });
-  refresh(() => { const pg = p(); info.textContent = `${paperName(pg.w, pg.h)} · ${pg.elements.length} object(s) · tap an object to edit it`; });
+  refresh(() => { const pg = p(); info.textContent = `${paperName(pg.w, pg.h)} · ${pg.elements.length} object(s)`; });
   body.append(section('Page',
     row(unitField('W', () => p().w, (v) => M.setPageSize(v, p().h)), unitField('H', () => p().h, (v) => M.setPageSize(p().w, v))),
     paperChips(), info));
@@ -376,6 +441,7 @@ function buildPageInspector(body, title) {
   if (!guides.length) list.append(h('p', { class: 'muted', style: { margin: '0 0 8px' } }, 'Drag from the top ruler for a horizontal guide, or the left ruler for a vertical one. Drag a guide off the page to delete it.'));
   for (const g of guides) {
     list.append(h('div', { class: 'row nowrap' },
+      h('span', { class: 'guide-ic', html: g.axis === 'v' ? '↔︎' : '↕︎' }),
       unitField(g.axis === 'v' ? 'X' : 'Y', () => state.doc.guides.find((q) => q.id === g.id)?.pos, (v) => M.moveGuide(g.id, v)),
       btn(icon('close'), () => M.removeGuide(g.id), 'btn icon', 'Remove guide')));
   }
@@ -403,6 +469,101 @@ function paperChips() {
     orient.textContent = pg.w > pg.h ? '↻ Landscape' : '↻ Portrait';
   });
   return wrap;
+}
+
+// ---- Markup panel (macOS Markup toolbar + style inspector)
+
+function buildMarkupPanel(body, title) {
+  title.append(h('div', { class: 'sel-name', html: icon('markup') }, h('span', {}, 'Markup')));
+  const strip = h('div', { class: 'tools' });
+  const buttons = TOOLS.map((t) => {
+    const b = h('button', {
+      class: 'tool', 'aria-label': t.label, title: `${t.label} (${t.key.toUpperCase()})`, html: icon(t.icon) + `<span>${t.label}</span>`,
+      onclick: () => M.setTool(state.ui.tool === t.id && t.id !== 'select' ? 'select' : t.id),
+    });
+    strip.append(b);
+    return [t.id, b];
+  });
+  refresh(() => buttons.forEach(([id, b]) => b.classList.toggle('on', state.ui.tool === id)));
+  body.append(section(null, strip,
+    toggle('Perfect shapes (squares, circles, 45° lines)', () => state.ui.constrain, (v) => { state.ui.constrain = v; M.setPref('constrain', v); })));
+  if (!markupStyleSection(body)) {
+    body.append(section(null, h('p', { class: 'muted' }, state.ui.tool === 'text'
+      ? 'Tap the page to add a text box, or drag to draw its frame.'
+      : 'Pick a tool, then drag on the page to draw. Select a shape or drawing to restyle it. Shapes and text return to Select when placed; the pen and highlighter stay on until you tap Done.')));
+  }
+}
+
+/**
+ * Style controls for a selected shape / drawing, or for the active tool when nothing is selected.
+ * Returns whether anything was added.
+ */
+function markupStyleSection(body) {
+  const el0 = M.selected();
+  const st = () => state.ui.markupStyle;
+  if (el0 && el0.kind === 'shape') {
+    const id = el0.id;
+    const S = () => M.findElement(id)?.el.shape || el0.shape;
+    const kids = [h('div', { class: 'cap' }, 'Stroke'), colorRow(() => S().stroke, (c) => { if (!c) return; M.updateShape(id, { stroke: c }); M.setMarkupStyle({ color: c }); })];
+    if (el0.shape.kind === 'rectangle' || el0.shape.kind === 'ellipse') {
+      kids.push(h('div', { class: 'cap' }, 'Fill'), colorRow(() => S().fill, (c) => { M.updateShape(id, { fill: c }); M.setMarkupStyle({ fill: c }); }, true));
+    }
+    kids.push(slider({ label: 'Line width', min: 0.5, max: 20, step: 0.5, get: () => S().lineWidth, set: (v) => { M.updateShape(id, { lineWidth: v }); M.setMarkupStyle({ lineWidth: v }); }, fmt: (v) => `${v.toFixed(1)} pt` }));
+    if (el0.shape.kind === 'rectangle') {
+      kids.push(slider({ label: 'Corner radius', min: 0, max: 60, step: 1, neutral: 0, get: () => S().cornerRadius || 0, set: (v) => M.updateShape(id, { cornerRadius: v }), fmt: (v) => `${Math.round(v)} pt` }));
+    }
+    if (el0.shape.kind === 'arrow') {
+      kids.push(toggle('Head at start', () => S().arrowAtStart, (v) => M.updateShape(id, { arrowAtStart: v })),
+        toggle('Head at end', () => S().arrowAtEnd, (v) => M.updateShape(id, { arrowAtEnd: v })));
+    }
+    body.append(section('Style', ...kids));
+    return true;
+  }
+  if (el0 && el0.kind === 'ink') {
+    const id = el0.id, hl = el0.ink.highlighter;
+    const I = () => M.findElement(id)?.el.ink || el0.ink;
+    body.append(section(hl ? 'Highlighter' : 'Pen',
+      colorRow(() => I().color, (c) => { if (!c) return; M.updateInk(id, { color: c }); M.setMarkupStyle(hl ? { highlighterColor: c } : { color: c }); }),
+      slider({ label: 'Width', min: hl ? 4 : 0.5, max: hl ? 40 : 20, step: 0.5, get: () => I().lineWidth, set: (v) => { M.updateInk(id, { lineWidth: v }); M.setMarkupStyle(hl ? { highlighterWidth: v } : { penWidth: v }); }, fmt: (v) => `${v.toFixed(1)} pt` })));
+    return true;
+  }
+  const t = state.ui.tool;
+  if (el0 || t === 'select' || t === 'text') return false;
+  const kids = [];
+  if (t === 'highlighter') {
+    kids.push(colorRow(() => st().highlighterColor, (c) => c && M.setMarkupStyle({ highlighterColor: c })),
+      slider({ label: 'Width', min: 4, max: 40, step: 0.5, get: () => st().highlighterWidth, set: (v) => M.setMarkupStyle({ highlighterWidth: v }), fmt: (v) => `${v.toFixed(1)} pt` }));
+  } else if (t === 'pen') {
+    kids.push(colorRow(() => st().color, (c) => c && M.setMarkupStyle({ color: c })),
+      slider({ label: 'Width', min: 0.5, max: 20, step: 0.5, get: () => st().penWidth, set: (v) => M.setMarkupStyle({ penWidth: v }), fmt: (v) => `${v.toFixed(1)} pt` }));
+  } else {
+    kids.push(h('div', { class: 'cap' }, 'Stroke'), colorRow(() => st().color, (c) => c && M.setMarkupStyle({ color: c })));
+    if (t === 'rectangle' || t === 'ellipse') kids.push(h('div', { class: 'cap' }, 'Fill'), colorRow(() => st().fill, (c) => M.setMarkupStyle({ fill: c }), true));
+    kids.push(slider({ label: 'Line width', min: 0.5, max: 20, step: 0.5, get: () => st().lineWidth, set: (v) => M.setMarkupStyle({ lineWidth: v }), fmt: (v) => `${v.toFixed(1)} pt` }));
+  }
+  kids.push(h('p', { class: 'muted', style: { margin: '4px 0' } }, toolInfo(t).freehand
+    ? 'Drag on the page to draw. The tool stays active; tap Done (or press Esc / V) to stop.'
+    : 'Drag on the page to draw. Turn on Perfect shapes (or hold ⇧) for squares, circles and 45° lines.'));
+  body.append(section(`${toolInfo(t).label} Style`, ...kids));
+  return true;
+}
+
+/** Long-press menu on an element (the Mac's right-click menu). */
+function openElementMenu(id) {
+  const f = M.findElement(id);
+  if (!f) return;
+  M.select(id);
+  const el = f.el;
+  const s = sheet(el.name, h('div', { class: 'sheet-list' },
+    sheetItem('duplicate', 'Duplicate', null, () => { s.close(); M.duplicateSelected(); }),
+    sheetItem('alTop', 'Bring to Front', null, () => { s.close(); M.reorderSelected('front'); }),
+    sheetItem('alBottom', 'Send to Back', null, () => { s.close(); M.reorderSelected('back'); }),
+    sheetItem('fit', 'Fit to Page (Keep Proportions)', null, () => { s.close(); M.fitSelectedToPage(false); }),
+    sheetItem('fitW', 'Stretch to Fill Page', null, () => { s.close(); M.fitSelectedToPage(true); }),
+    el.kind === 'image' ? sheetItem('corners', 'Corner Unwarp…', null, () => { s.close(); openCornerEditor(id); }) : null,
+    el.kind === 'image' ? sheetItem('wand', 'Scan Enhance', null, () => { s.close(); M.scanEnhance(id); openPanel('scan'); }) : null,
+    el.kind === 'text' ? sheetItem('text', 'Edit Text', null, () => { s.close(); openPanel('edit'); focusText(); }) : null,
+    sheetItem('trash', 'Delete', null, () => { s.close(); M.deleteSelected(); }, true)));
 }
 
 // ---- Scan panel (Document Scan inspector)
@@ -532,11 +693,63 @@ function rebuildStrip(strip) {
     let c = thumbCache.get(pg.id)?.canvas;
     if (!c) { c = h('canvas'); thumbCache.set(pg.id, { sig: null, canvas: c }); }
     c.style.width = `${tw}px`; c.style.height = `${th}px`;
-    const t = h('button', { class: 'thumb' + (pg.id === state.ui.pageId ? ' on' : ''), onclick: () => M.selectPage(pg.id), 'aria-label': `Page ${i + 1}` }, c, h('span', {}, String(i + 1)));
+    const paper = paperName(pg.w, pg.h).replace(' landscape', '');
+    const t = h('button', { class: 'thumb' + (pg.id === state.ui.pageId ? ' on' : ''), 'aria-label': `Page ${i + 1}` },
+      c, h('span', {}, String(i + 1)), h('small', {}, paper));
+    thumbGestures(t, pg.id, strip);
     strip.append(t);
     if (pg.id === state.ui.pageId) requestAnimationFrame(() => t.scrollIntoView({ inline: 'nearest', block: 'nearest' }));
   });
   updateThumbs(strip);
+}
+
+/** Tap = select; long-press = page menu; long-press and drag sideways = reorder. */
+function thumbGestures(t, id, strip) {
+  let timer = null, start = null, dragging = false, held = false, ghostX = 0;
+  t.addEventListener('pointerdown', (e) => {
+    start = { x: e.clientX, y: e.clientY, id: e.pointerId };
+    held = false; dragging = false;
+    timer = setTimeout(() => { held = true; t.classList.add('lifted'); navigator.vibrate?.(10); }, 380);
+  });
+  t.addEventListener('pointermove', (e) => {
+    if (!start || e.pointerId !== start.id) return;
+    const dx = e.clientX - start.x, dy = e.clientY - start.y;
+    if (!held) { if (Math.hypot(dx, dy) > 8) { clearTimeout(timer); start = null; } return; }
+    if (!dragging && Math.abs(dx) > 6) { dragging = true; try { t.setPointerCapture(e.pointerId); } catch { /* ignore */ } }
+    if (dragging) { ghostX = dx; t.style.transform = `translateX(${dx}px) scale(1.05)`; e.preventDefault(); }
+  });
+  const end = (e) => {
+    clearTimeout(timer);
+    if (!start) return;
+    start = null;
+    t.classList.remove('lifted');
+    t.style.transform = '';
+    if (dragging) {
+      // Drop position: count thumbnails whose centre is left of the dragged thumb's centre.
+      const r = t.getBoundingClientRect(), cx = r.left + r.width / 2 + ghostX;
+      const others = [...strip.children].filter((x) => x !== t);
+      const index = others.filter((x) => { const b = x.getBoundingClientRect(); return b.left + b.width / 2 < cx; }).length;
+      M.movePageTo(id, index);
+    } else if (held) {
+      openPageMenu(id);
+    } else if (e.type === 'pointerup') {
+      M.selectPage(id);
+    }
+    dragging = false; held = false;
+  };
+  t.addEventListener('pointerup', end);
+  t.addEventListener('pointercancel', end);
+  t.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+
+function openPageMenu(id) {
+  const n = state.doc.pages.findIndex((p) => p.id === id) + 1;
+  const s = sheet(`Page ${n}`, h('div', { class: 'sheet-list' },
+    sheetItem('pageAdd', 'Insert Page After', null, () => { s.close(); M.addPage(id); }),
+    sheetItem('duplicate', 'Duplicate Page', null, () => { s.close(); M.duplicatePage(id); }),
+    sheetItem('rotL', 'Rotate Left', null, () => { s.close(); M.rotatePage(id, false); }),
+    sheetItem('rotR', 'Rotate Right', null, () => { s.close(); M.rotatePage(id, true); }),
+    sheetItem('trash', 'Delete Page', null, () => { s.close(); M.deletePage(id); }, true)));
 }
 
 let thumbBusy = false;
@@ -587,6 +800,7 @@ function openAddSheet() {
     sheetItem('photo', 'Photo Library', 'Choose one or more photos', () => { s.close(); pickFiles('photos'); }),
     sheetItem('file', 'Files', 'Images or PDF documents (each PDF page becomes a page)', () => { s.close(); pickFiles('files'); }),
     sheetItem('text', 'Text Box', 'Add a line of text', () => { s.close(); M.addText(); openPanel('edit'); focusText(); }),
+    sheetItem('markup', 'Markup', 'Shapes, arrows, highlighter and pen', () => { s.close(); openPanel('markup'); }),
     sheetItem('pageAdd', 'New Page', 'Blank page after the current one', () => { s.close(); M.addPage(); })));
 }
 
@@ -603,7 +817,7 @@ function openViewSheet() {
     sheetItem('fit', 'Fit Page' + mark('fitPage'), null, () => { s.close(); setZoomMode('fitPage'); }),
     sheetItem('actual', '100% — Actual Size' + mark('actual'), 'One inch on screen = one real inch', () => { s.close(); setZoomMode('actual'); }),
     h('div', { class: 'btn-group', style: { padding: '6px 10px' } },
-      ...[50, 200, 400].map((p) => btn(`${p}%`, () => { s.close(); setZoomMode('percent', p); })),
+      ...[50, 75, 150, 200, 400].map((p) => btn(`${p}%`, () => { s.close(); setZoomMode('percent', p); })),
       btn(icon('zoomOut'), () => { zoomBy(0.8); s.close(); }, 'btn icon', 'Zoom out'),
       btn(icon('zoomIn'), () => { zoomBy(1.25); s.close(); }, 'btn icon', 'Zoom in')),
     sheetItem('ruler', 'Calibrate Actual Size…', 'Match the screen to a real card or ruler', () => { s.close(); openCalibration(); })));
@@ -611,24 +825,36 @@ function openViewSheet() {
 
 function openCalibration() {
   let k = calibration();
+  // A phone screen is narrower than a bank card, so the card stands upright (54 × 85.6 mm)
+  // and the ruler bar is 50 mm (100 mm on wider screens, like the Mac's).
   const card = h('div', { class: 'calib-card' });
+  const bar = h('div', { class: 'calib-bar' });
   const val = h('span', { class: 'val' });
-  const sizeCard = () => {
-    const s = (cssPxPerInch() / 72) * k;
-    card.style.width = `${toPoints(85.6, 'mm') * s}px`;
-    card.style.height = `${toPoints(53.98, 'mm') * s}px`;
-    val.textContent = `${Math.round(k * 1000) / 10}%`;
+  const stage = h('div', { class: 'calib-stage' }, card, bar);
+  const resize = () => {
+    const sc = (cssPxPerInch() / 72) * k;
+    const room = Math.max(200, Math.min(window.innerWidth, 560) - 48);
+    const upright = toPoints(85.6, 'mm') * sc > room;
+    card.style.width = `${toPoints(upright ? 53.98 : 85.6, 'mm') * sc}px`;
+    card.style.height = `${toPoints(upright ? 85.6 : 53.98, 'mm') * sc}px`;
+    const mm = toPoints(100, 'mm') * sc <= room ? 100 : 50;
+    const len = toPoints(mm, 'mm') * sc;
+    bar.style.width = `${len}px`;
+    bar.innerHTML = Array.from({ length: mm / 5 + 1 }, (_, i) => `<i style="left:${(i * len) / (mm / 5)}px;height:${i % 2 ? 9 : 16}px"></i>`).join('') + `<b>${mm} mm</b>`;
+    val.textContent = `${k >= 1 ? '+' : ''}${((k - 1) * 100).toFixed(1)}%`;
   };
-  const range = h('input', { type: 'range', min: 0.7, max: 1.3, step: 0.002, value: k });
-  range.addEventListener('input', () => { k = parseFloat(range.value); sizeCard(); });
+  const range = h('input', { type: 'range', min: 0.8, max: 1.2, step: 0.001, value: k });
+  range.addEventListener('input', () => { k = parseFloat(range.value); resize(); });
+  const dpr = window.devicePixelRatio || 1;
   const s = sheet('Calibrate Actual Size', h('div', {},
-    h('p', { class: 'muted' }, 'Hold a bank card (or any ID-1 card) against the screen and drag until the outline matches its edges.'),
-    h('div', { class: 'calib-stage' }, card),
-    h('div', { class: 'slider-row' }, h('span', { class: 'lbl' }, 'Scale'), range, val),
+    h('p', { class: 'muted' }, 'Hold a bank card (or any ID-1 card) against the outline, or a ruler against the bar, and adjust until they match exactly.'),
+    stage,
+    h('div', { class: 'slider-row' }, h('span', { class: 'lbl' }, 'Correction'), range, val),
+    h('p', { class: 'muted small', style: { textAlign: 'center' } }, `${screen.width} × ${screen.height} pt · ${Math.round(cssPxPerInch() * dpr)} px/in · @${dpr}x`),
     h('div', { class: 'sheet-actions' },
-      btn('Reset', () => { k = 1; range.value = 1; sizeCard(); }),
+      btn('Reset', () => { k = 1; range.value = 1; resize(); }),
       btn('Save', () => { localStorage.setItem('calibration', String(k)); s.close(); setZoomMode('actual'); toast('Saved — 100% now matches real size.'); }, 'btn primary'))));
-  sizeCard();
+  resize();
 }
 
 // ------------------------------------------------------------------ Menu sheet
@@ -674,7 +900,9 @@ export function initUI() {
   M.hooks.alert = alertDialog;
   M.hooks.busy = (on) => { $('#busy').hidden = !on; };
   canvasHooks.editText = (id) => { M.select(id); openPanel('edit'); focusText(); };
+  canvasHooks.contextMenu = openElementMenu;
   canvasHooks.changed = (flags) => {
+    if (flags.has('pointer') && flags.size === 1) { updateStatus(); return; }
     updateChrome();
     updatePanel(flags);
     sheetScopes.forEach((sc) => sc.forEach((f) => f(flags)));

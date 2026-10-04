@@ -9,6 +9,7 @@ import {
   assets, importImageFile, persistable, onDisplayReady, whenDisplay, detectDocument, displayKey, forgetAsset,
 } from './imaging.js';
 import { importPdfFile, onPreviewReady } from './pdfsupport.js';
+import { DEFAULT_STYLE, simplify } from './markup.js';
 
 export const DEFAULT_SCAN = Object.freeze({
   mode: 'original', exposure: 0, contrast: 1, saturation: 1, gamma: 1, sharpness: 0, hardThreshold: false, inkSensitivity: 0.5,
@@ -246,6 +247,18 @@ export function deletePage(id) {
   emit('doc', 'sel', 'view');
 }
 
+/** Moves a page to a new position (thumbnail drag). */
+export function movePageTo(id, index) {
+  const P = state.doc.pages;
+  const i = P.findIndex((p) => p.id === id);
+  index = Math.max(0, Math.min(P.length - 1, index));
+  if (i < 0 || i === index) return;
+  checkpoint();
+  const [p] = P.splice(i, 1);
+  P.splice(index, 0, p);
+  emit('doc');
+}
+
 export function movePage(id, delta) {
   const P = state.doc.pages;
   const i = P.findIndex((p) => p.id === id), j = i + delta;
@@ -351,10 +364,12 @@ function addImage(asset, point) {
   return el.id;
 }
 
-export function addText() {
+/** Adds a text box (in `rect`, or centered on the page) and selects it for editing. */
+export function addText(rect = null) {
   const page = currentPage();
+  const r = rect || { x: page.w / 2 - 100, y: page.h / 2 - 20, w: 200, h: 40 };
   const el = {
-    id: uid(), kind: 'text', x: page.w / 2 - 100, y: page.h / 2 - 20, w: 200, h: 40, rotation: 0,
+    id: uid(), kind: 'text', x: r.x, y: r.y, w: r.w, h: r.h, rotation: 0,
     aspectLocked: false, opacity: 1, name: 'Text',
     text: 'Text', font: 'Helvetica', size: 18, color: '#000000', align: 'left',
   };
@@ -364,6 +379,85 @@ export function addText() {
   state.ui.inspectorTab = 'transform';
   emit('doc', 'sel');
   return el.id;
+}
+
+// ------------------------------------------------------------------ markup
+
+function loadStyle() {
+  try { return { ...DEFAULT_STYLE, ...JSON.parse(localStorage.getItem('markupStyle') || '{}') }; } catch { return { ...DEFAULT_STYLE }; }
+}
+state.ui.tool = 'select';
+state.ui.markupStyle = loadStyle();
+state.ui.constrain = localStorage.getItem('constrain') === '1';
+
+/** Switches the canvas tool. Choosing a drawing tool clears the selection (like macOS Markup). */
+export function setTool(id) {
+  const prev = state.ui.tool;
+  state.ui.tool = id;
+  if (id !== 'select' && id !== prev) state.ui.selId = null;
+  emit('ui', 'sel');
+}
+
+export function setMarkupStyle(patch) {
+  Object.assign(state.ui.markupStyle, patch);
+  try { localStorage.setItem('markupStyle', JSON.stringify(state.ui.markupStyle)); } catch { /* ignore */ }
+  emit('ui');
+}
+
+const SHAPE_NAMES = { rectangle: 'Rectangle', ellipse: 'Oval', line: 'Line', arrow: 'Arrow' };
+
+/** Adds a rectangle / oval (from the drag rectangle) or a line / arrow (from start to end). */
+export function addShape(kind, a, b) {
+  const st = state.ui.markupStyle;
+  const linear = kind === 'line' || kind === 'arrow';
+  const shape = {
+    kind, stroke: st.color, fill: linear ? null : st.fill, lineWidth: st.lineWidth, cornerRadius: 0,
+    start: [0, 0], end: [1, 1], arrowAtStart: false, arrowAtEnd: true,
+  };
+  let x = Math.min(a[0], b[0]), y = Math.min(a[1], b[1]), w = Math.abs(b[0] - a[0]), h = Math.abs(b[1] - a[1]);
+  if (linear) {
+    // Keep a minimum thickness so purely horizontal / vertical lines still have a frame.
+    if (w < 1) { x -= (1 - w) / 2; w = 1; }
+    if (h < 1) { y -= (1 - h) / 2; h = 1; }
+    shape.start = [(a[0] - x) / w, (a[1] - y) / h];
+    shape.end = [(b[0] - x) / w, (b[1] - y) / h];
+  }
+  const el = { id: uid(), kind: 'shape', x, y, w, h, rotation: 0, aspectLocked: false, opacity: 1, name: SHAPE_NAMES[kind], shape };
+  checkpoint();
+  currentPage().elements.push(el);
+  state.ui.selId = el.id;
+  state.ui.inspectorTab = 'transform';
+  emit('doc', 'sel');
+  return el.id;
+}
+
+/** Adds one freehand pen or highlighter stroke (points in page coordinates). */
+export function addInk(raw, highlighter) {
+  const st = state.ui.markupStyle;
+  const width = highlighter ? st.highlighterWidth : st.penWidth;
+  let pts = simplify(raw, 0.6);
+  if (pts.length === 1) pts.push([pts[0][0] + 0.5, pts[0][1]]);     // a dot
+  if (!pts.length) return null;
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  // Pad by half the stroke so the whole line sits inside the frame.
+  const x = Math.min(...xs) - width / 2, y = Math.min(...ys) - width / 2;
+  const w = Math.max(...xs) - Math.min(...xs) + width, h = Math.max(...ys) - Math.min(...ys) + width;
+  const ink = { points: pts.map((p) => [(p[0] - x) / w, (p[1] - y) / h]), color: highlighter ? st.highlighterColor : st.color, lineWidth: width, highlighter };
+  const el = { id: uid(), kind: 'ink', x, y, w, h, rotation: 0, aspectLocked: true, opacity: 1, name: highlighter ? 'Highlight' : 'Drawing', ink };
+  checkpoint();
+  currentPage().elements.push(el);
+  emit('doc');
+  return el.id;
+}
+
+export function updateShape(id, patch) {
+  checkpointCoalesced('shape-' + id + Object.keys(patch).join());
+  updateElement(id, (e) => { if (e.shape) Object.assign(e.shape, patch); });
+}
+
+export function updateInk(id, patch) {
+  checkpointCoalesced('ink-' + id + Object.keys(patch).join());
+  updateElement(id, (e) => { if (e.ink) Object.assign(e.ink, patch); });
 }
 
 // ------------------------------------------------------------------ element editing

@@ -13,15 +13,19 @@ Document layout and scan clean-up in the browser, built for iPhone (also works o
 - **Layout:** rulers with drag-out guides, snapping to guides, edges and centers, exact X / Y / W / H in mm, cm or in, aspect lock, size presets (passport 35 × 45 mm, 2 × 2 in, ID card, business card, 300 dpi), rotation, opacity, layers and align.
 - **Fit to Page:** *Keep proportions* scales the selection to fit inside the page and centers it; *Fill page* stretches it to the page exactly (handy for a photographed A4 / Letter form). Adjustable margin and *Restore Proportions*.
 - **Text boxes** with font, size, color and alignment.
+- **Markup** (like macOS Markup): Select, Text, Rectangle, Oval, Line, Arrow, Highlighter and Pen. Drag on the page to draw; *Perfect shapes* (or ⇧ on an iPad keyboard) makes squares, circles and 45° lines. Shapes and text return to Select when placed; the pen and highlighter stay on until you tap **Done**. Restyle a selection with color swatches, fill, line width, corner radius and arrowheads; new marks use the last style. The highlighter multiplies like a real marker. Shapes export as vectors in PDF.
+- **Long-press** an object for Duplicate, Bring to Front / Send to Back, Fit to Page, Stretch to Fill Page, Corner Unwarp, Scan Enhance and Delete. Long-press a page thumbnail for its page menu, or long-press and drag it to reorder.
+- **Status bar** with the finger / pointer position, the selection's size and the zoom; rulers mark guides and the pointer. Double-tap empty space to fit the page.
+- **Keyboard (iPad):** V T R O L A H P pick tools, Esc stops drawing, ⌫ deletes, arrows nudge (⇧ × 10), ⌘Z / ⇧⌘Z, ⌘D, ⌘+ / ⌘− / ⌘0.
 - **Pages:** US Letter, Legal, A3, A4, A5 or custom; portrait / landscape; insert, duplicate, rotate, reorder, delete.
 - **PDF import:** each page becomes a page and stays vector in the exported PDF.
-- **100 % = real size**, with calibration against a bank card.
+- **Zoom:** Fit Width, Fit Page, 100 % = real size, 50 / 75 / 150 / 200 / 400 %, pinch to zoom. Calibrate against a bank card or a ruler bar.
 - **Export:** one screen for PDF, Word, JPEG and PNG. Pick pages (all, current or a range like `1-3, 5`), a quality preset or the compression slider, resolution, and color / grayscale / 1-bit B&W, and watch the estimated file size update live with badges for common 1–25 MB upload limits. *Fit under N MB* finds the best quality that fits. The preview shows the page exactly as it will be compressed (*1:1 Pixels* to inspect text). PDFs can be made **searchable** (on-device English OCR) and **password-protected** (AES-128). Files go out through the iOS share sheet (Save to Files, Save to Photos, Print, AirDrop, Mail).
 - Undo / redo, pinch to zoom, double-tap a text box to edit it.
 
 ## Publishing
 
-Every push to `main` deploys through `.github/workflows/pages.yml`. Once, enable *Settings → Pages → Source: GitHub Actions*.
+Every push to `main` runs the tests and deploys through `.github/workflows/pages.yml`. Set *Settings → Pages → Build and deployment → Source* to **GitHub Actions** (the branch option also works, but skips the tests). Open copies of the app pick up a new release automatically: app files are fetched network-first and the page reloads once when a new version takes over. Bump `APP_VERSION` in `js/ui.js` and `VERSION` in `sw.js` together for each release (a test checks this).
 
 **Run locally:** `python3 -m http.server 8000`, then open `http://localhost:8000`.
 
@@ -34,7 +38,8 @@ Every push to `main` deploys through `.github/workflows/pages.yml`. Once, enable
 | `js/scan-worker.js` | Web Worker: perspective unwarp, illumination flattening, filters, edge detection |
 | `js/imaging.js` | image import (EXIF orientation, DPI), proxies, preview cache, full-resolution renders |
 | `js/canvas.js` | touch canvas: move / resize / rotate, pinch zoom, rulers, guides, real-size zoom |
-| `js/ui.js`, `js/perspective.js` | panels (Edit, Scan, Pages), sheets (Add, Export, View, Menu), corner editor |
+| `js/ui.js`, `js/perspective.js` | panels (Edit, Markup, Scan, Pages), sheets (Add, View, Menu, context menus), corner editor |
+| `js/markup.js` | markup tools, styles and the shape / ink geometry used by the canvas and every exporter |
 | `js/export.js` | export engine: resolution / compression / colour mode, caches, size estimate, fit-under-N-MB, previews, PDF (pdf-lib, JPEG passed through, 1-bit images), DOCX, JPEG / PNG pages |
 | `js/exportui.js` | export screen |
 | `js/pdfcrypt.js` | PDF password protection (AES-128, standard security handler) |

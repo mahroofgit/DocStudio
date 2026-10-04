@@ -3,7 +3,7 @@
 
 import * as M from './model.js';
 import { assets, ensureImageReady, detectDocument, previewQuad } from './imaging.js';
-import { FULL_QUAD, isFullQuad } from './geometry.js';
+import { FULL_QUAD, isFullQuad, quadOutputSize } from './geometry.js';
 
 const $ = (s) => document.querySelector(s);
 const LOUPE = 124, ZOOM = 3;
@@ -16,7 +16,7 @@ export async function openCornerEditor(id) {
   try { await ensureImageReady(asset); } finally { M.busy(false); }
 
   let quad = (f.el.quad || FULL_QUAD).map((p) => [...p]);
-  let showResult = false;
+  let showResult = true;          // the Mac editor always shows the result beside the photo
   let resultGen = 0;
 
   const root = $('#persp');
@@ -28,16 +28,17 @@ export async function openCornerEditor(id) {
     </header>
     <div class="stage">
       <img alt="">
-      <svg><polygon class="quad"/></svg>
+      <svg><path class="dim" fill-rule="evenodd"/><polygon class="quad"/></svg>
       <canvas class="loupe" hidden></canvas>
       <img class="result" alt="Un-warped result" hidden>
     </div>
     <div>
-      <div class="hint">Drag each orange pin onto a corner of the paper. The loupe shows the exact spot.</div>
+      <div class="hint"><span class="readout"></span> · Drag the four corners onto the edges of the paper.</div>
       <footer>
         <button class="btn" data-a="auto">Auto Detect</button>
         <button class="btn" data-a="reset">Reset</button>
-        <button class="btn" data-a="preview">Preview Result</button>
+        <button class="btn on" data-a="preview">Result</button>
+        <button class="btn" data-a="remove">Remove Correction</button>
       </footer>
     </div>`;
   root.hidden = false;
@@ -46,6 +47,8 @@ export async function openCornerEditor(id) {
   const img = root.querySelector('.stage img');
   const svg = root.querySelector('svg');
   const poly = root.querySelector('.quad');
+  const dim = root.querySelector('.dim');
+  const readout = root.querySelector('.readout');
   const loupe = root.querySelector('.loupe');
   const result = root.querySelector('.result');
   const circles = quad.map(() => {
@@ -72,6 +75,10 @@ export async function openCornerEditor(id) {
   function draw(active = -1) {
     const pts = quad.map(toScreen);
     poly.setAttribute('points', pts.map((p) => p.join(',')).join(' '));
+    // Dim everything outside the quad.
+    dim.setAttribute('d', `M${box.x},${box.y}h${box.w}v${box.h}h${-box.w}Z M${pts.map((p) => p.join(',')).join(' L')}Z`);
+    const o = quadOutputSize(quad, img.naturalWidth, img.naturalHeight);
+    readout.textContent = `Output aspect ${(o.w / Math.max(1e-6, o.h)).toFixed(3)} : 1`;
     circles.forEach((c, i) => {
       c.setAttribute('cx', pts[i][0]); c.setAttribute('cy', pts[i][1]);
       c.classList.toggle('active', i === active);
@@ -177,9 +184,10 @@ export async function openCornerEditor(id) {
     }
     if (a === 'reset') { quad = FULL_QUAD.map((p) => [...p]); draw(); updateResult(); }
     if (a === 'preview') { showResult = !showResult; b.classList.toggle('on', showResult); updateResult(); }
+    if (a === 'remove') { close(); await M.applyPerspective(id, null); }
   });
 
-  requestAnimationFrame(layout);
+  requestAnimationFrame(() => { layout(); updateResult(); });
 }
 
 function isConvex(q) {

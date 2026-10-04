@@ -10,10 +10,10 @@ import { icon } from './icons.js';
 import { view, setZoomMode, zoomBy, zoomPercent, actualScale, cssPxPerInch, calibration, canvasHooks } from './canvas.js';
 import { assets, ensureImageReady } from './imaging.js';
 import { renderPage } from './render.js';
-import { exportPDF, exportDOCX, exportPageImage } from './export.js';
+import { openExporter } from './exportui.js';
 import { openCornerEditor } from './perspective.js';
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 const $ = (s) => document.querySelector(s);
 
 // ------------------------------------------------------------------ DOM helpers
@@ -183,7 +183,7 @@ function initChrome() {
 
   $('#btn-undo').addEventListener('click', () => M.undo());
   $('#btn-redo').addEventListener('click', () => M.redo());
-  $('#btn-export').addEventListener('click', openExportSheet);
+  $('#btn-export').addEventListener('click', () => openExporter());
   $('#btn-menu').addEventListener('click', openMenuSheet);
   $('#title-wrap').addEventListener('click', () => promptDialog('Document name', state.doc.title, (v) => M.rename(v)));
   $('#panel-close').addEventListener('click', closePanel);
@@ -301,17 +301,36 @@ function buildEditPanel(body, title) {
   const presets = h('select', { class: 'select', 'aria-label': 'Size presets' },
     h('option', { value: '' }, 'Size presets…'),
     ...SIZE_PRESETS.map((p, i) => h('option', { value: 'p' + i }, p.label)),
-    el0.kind === 'image' ? h('option', { value: 'dpi300' }, 'Original pixel size @ 300 dpi') : null,
-    h('option', { value: 'fit' }, 'Fit to page'));
+    el0.kind === 'image' ? h('option', { value: 'dpi300' }, 'Original pixel size @ 300 dpi') : null);
   presets.addEventListener('change', () => {
     const v = presets.value; presets.value = '';
     if (v.startsWith('p')) { const p = SIZE_PRESETS[+v.slice(1)]; M.resizeFree(p.w, p.h); }
     if (v === 'dpi300') M.setSelectedAtDPI(300);
-    if (v === 'fit') M.fitSelectedToPage();
   });
   body.append(section('Size',
     h('div', { class: 'row nowrap' }, unitField('W', () => cur()?.w, (v) => M.resizeSelected({ w: v })), unitField('H', () => cur()?.h, (v) => M.resizeSelected({ h: v })), lockBtn),
     row(presets)));
+
+  // Fit to Page: keep proportions (aspect lock on) or fill the page exactly (lock off).
+  const pageName = () => { const pg = M.currentPage(), n = paperName(pg.w, pg.h); return n === 'Custom' ? 'the page' : n.replace(' landscape', ''); };
+  const fitBtn = btn('', () => M.fitSelectedToPage(), 'btn primary');
+  const restoreBtn = btn('Restore Proportions', () => M.restoreProportions(), 'btn');
+  const fitInfo = h('p', { class: 'muted', style: { margin: '0 0 6px' } });
+  refresh(() => {
+    const e = cur(); if (!e) return;
+    fitBtn.innerHTML = icon('fit') + `Fit to ${pageName()}`;
+    restoreBtn.hidden = !M.isStretched(e);
+    fitInfo.textContent = e.aspectLocked
+      ? `Scales to fit inside ${pageName()}, keeping the original aspect ratio and centering it.`
+      : `Stretches to fill ${pageName()} edge to edge (minus the margin). Proportions may change.`;
+  });
+  body.append(section('Fit to Page',
+    h('div', { style: { marginBottom: '8px' } }, segmented([
+      { value: true, label: 'Keep proportions' }, { value: false, label: 'Fill page' },
+    ], () => !!cur()?.aspectLocked, (v) => M.setAspectLocked(id, v))),
+    row(unitField('Margin', () => state.ui.fitMargin, (v) => M.setPref('fitMargin', Math.max(0, v)))),
+    h('div', { class: 'btn-group', style: { marginBottom: '8px' } }, fitBtn, restoreBtn),
+    fitInfo));
 
   const stepLbl = h('span', { class: 'muted' });
   refresh(() => { const u = state.ui.unit; stepLbl.textContent = `Nudge ${u === 'in' ? '1/16 in' : '1 mm'} per tap`; });
@@ -390,9 +409,9 @@ function paperChips() {
 
 const MODE_INFO = {
   original: 'No document processing — adjustments only.',
-  colorScan: 'Flattens shadows and removes paper yellowing while keeping logos and photos in color.',
-  blackWhite: 'Turns gray paper pure white and boosts ink to solid black.',
-  grayscale: 'Neutral gray scan with even lighting.',
+  colorScan: 'Evens out shadows and paper yellowing. Levels are set automatically from this photo; logos and photos keep their color.',
+  blackWhite: 'Paper goes pure white and ink goes black, judged locally so faint and thin strokes are kept.',
+  grayscale: 'Neutral gray scan with even lighting and automatic levels. Shaded form areas keep their tone.',
 };
 
 function buildScanPanel(body, title) {
@@ -457,7 +476,8 @@ function buildScanPanel(body, title) {
   if (el0.scan?.mode === 'blackWhite') {
     body.append(section('Black & White',
       toggle('Hard threshold (1-bit)', () => S().hardThreshold, (v) => set({ hardThreshold: v }, 'hard')),
-      slider({ label: 'Threshold', min: 0.1, max: 0.9, step: 0.01, neutral: 0.55, get: () => S().threshold, set: (v) => set({ threshold: v }, 'threshold') })));
+      slider({ label: 'Ink', min: 0, max: 1, step: 0.01, neutral: 0.5, get: () => S().inkSensitivity, set: (v) => set({ inkSensitivity: v }, 'sensitivity'), fmt: (v) => `${Math.round(v * 100)}%` }),
+      h('p', { class: 'muted', style: { margin: '2px 0 6px' } }, 'Ink sensitivity: raise to keep faint or thin strokes; lower to remove speckles and paper texture.')));
   }
 
   const resetAll = btn('Reset All Adjustments', () => M.setScan(id, { ...DEFAULT_SCAN, mode: S().mode }, 'reset'), 'btn');
@@ -572,64 +592,6 @@ function openAddSheet() {
 
 function focusText() {
   setTimeout(() => { const ta = document.querySelector('#panel-body textarea'); if (ta) { ta.focus(); ta.select(); } }, 80);
-}
-
-// ------------------------------------------------------------------ Export sheet
-
-function openExportSheet() {
-  const body = h('div');
-  const s = sheet('Export', body);
-  const list = h('div', { class: 'sheet-list' },
-    sheetItem('pdf', 'PDF', 'Exact page sizes · full-resolution scans · PDF pages stay vector', () => run('pdf')),
-    sheetItem('word', 'Word (.docx)', 'Pictures and text boxes placed exactly on each page', () => run('docx')),
-    sheetItem('photo', 'Current page as image', 'JPEG at 300 dpi — save to Photos or print', () => run('image')));
-  body.append(list);
-
-  async function run(kind) {
-    const bar = h('div');
-    const label = h('p', { class: 'muted' }, 'Preparing…');
-    body.replaceChildren(label, h('div', { class: 'progress' }, bar));
-    const progress = (f) => { bar.style.width = `${Math.round(f * 100)}%`; };
-    let file;
-    try {
-      await M.saveNow();
-      if (kind === 'pdf') { label.textContent = 'Building PDF…'; file = await exportPDF(progress); }
-      else if (kind === 'docx') { label.textContent = 'Building Word document…'; file = await exportDOCX(progress); }
-      else { label.textContent = 'Rendering page…'; file = await exportPageImage(M.currentPage(), M.currentPageIndex() + 1); }
-    } catch (e) {
-      console.error(e);
-      s.close();
-      alertDialog(`Export failed: ${e.message || e}`);
-      return;
-    }
-    progress(1);
-    const size = file.size > 1e6 ? `${(file.size / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1e3))} KB`;
-    body.replaceChildren(
-      h('div', { class: 'sheet-item', style: { pointerEvents: 'none' } },
-        h('span', { class: 'ic', html: icon(kind === 'pdf' ? 'pdf' : kind === 'docx' ? 'word' : 'photo') }),
-        h('span', { class: 'tx' }, h('b', {}, file.name), h('small', {}, size))),
-      h('div', { class: 'sheet-actions' },
-        btn(icon('share') + 'Share / Save', () => shareFile(file), 'btn primary'),
-        btn('Download', () => downloadFile(file), 'btn')),
-      h('p', { class: 'muted', style: { marginTop: '10px', textAlign: 'center' } }, 'Share opens the iOS sheet: Save to Files, Print, AirDrop, Mail…'));
-  }
-}
-
-async function shareFile(file) {
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: file.name }); return; }
-    catch (e) { if (e.name === 'AbortError') return; }
-  }
-  downloadFile(file);
-}
-
-function downloadFile(file) {
-  const url = URL.createObjectURL(file);
-  const a = h('a', { href: url, download: file.name });
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 120000);
 }
 
 // ------------------------------------------------------------------ View sheet

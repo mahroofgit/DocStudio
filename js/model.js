@@ -2,7 +2,7 @@
 // snapshot undo/redo and continuous autosave.
 
 import {
-  A4, PAPERS, uid, normalizedAngle, boundingBox, aspectFit, center, isFullQuad, UNITS,
+  A4, PAPERS, uid, normalizedAngle, boundingBox, aspectFit, center, isFullQuad, quadOutputSize, UNITS,
 } from './geometry.js';
 import { store } from './store.js';
 import {
@@ -11,14 +11,26 @@ import {
 import { importPdfFile, onPreviewReady } from './pdfsupport.js';
 
 export const DEFAULT_SCAN = Object.freeze({
-  mode: 'original', exposure: 0, contrast: 1, saturation: 1, gamma: 1, sharpness: 0, hardThreshold: false, threshold: 0.55,
+  mode: 'original', exposure: 0, contrast: 1, saturation: 1, gamma: 1, sharpness: 0, hardThreshold: false, inkSensitivity: 0.5,
 });
+// Presets stay neutral: the pipeline measures each photo and sets levels automatically,
+// so the sliders are only for taste.
 export const SCAN_PRESETS = {
   original: { ...DEFAULT_SCAN },
-  colorScan: { ...DEFAULT_SCAN, mode: 'colorScan', contrast: 1.15, saturation: 1.15, sharpness: 0.4 },
-  blackWhite: { ...DEFAULT_SCAN, mode: 'blackWhite', contrast: 1.3, saturation: 0, sharpness: 0.6 },
-  grayscale: { ...DEFAULT_SCAN, mode: 'grayscale', contrast: 1.15, sharpness: 0.4 },
+  colorScan: { ...DEFAULT_SCAN, mode: 'colorScan', sharpness: 0.3 },
+  grayscale: { ...DEFAULT_SCAN, mode: 'grayscale', sharpness: 0.3 },
+  blackWhite: { ...DEFAULT_SCAN, mode: 'blackWhite' },
 };
+
+/** Older saved documents used a global B&W threshold; it became the adaptive ink sensitivity. */
+function migrateDoc(doc) {
+  for (const p of doc.pages) for (const e of p.elements) {
+    if (e.kind !== 'image' || !e.scan) continue;
+    if ('threshold' in e.scan) { delete e.scan.threshold; }
+    e.scan = { ...DEFAULT_SCAN, ...e.scan };
+  }
+  return doc;
+}
 export const isIdentitySettings = (s) => JSON.stringify({ ...DEFAULT_SCAN, ...s }) === JSON.stringify(DEFAULT_SCAN);
 
 const region = (navigator.language || 'en-US').split('-')[1] || '';
@@ -36,6 +48,7 @@ export const state = {
     snap: localStorage.getItem('snap') !== '0',
     showGuides: localStorage.getItem('showGuides') !== '0',
     inspectorTab: 'transform',
+    fitMargin: parseFloat(localStorage.getItem('fitMargin') || '0') || 0,   // points, used by Fit to Page
   },
 };
 if (!UNITS[state.ui.unit]) state.ui.unit = 'mm';
@@ -146,7 +159,7 @@ export async function loadSaved() {
   const recs = await store.allAssets();
   for (const r of recs) assets.set(r.id, { ...r });
   if (saved && saved.doc && saved.doc.pages && saved.doc.pages.length) {
-    state.doc = saved.doc;
+    state.doc = migrateDoc(saved.doc);
     state.doc.guides = state.doc.guides || [];
     state.ui.pageId = saved.pageId;
     repairSelection();
@@ -464,11 +477,66 @@ export function align(a) {
   emit('doc');
 }
 
-export function fitSelectedToPage() {
+/**
+ * Fits the selection to the page (inside the fit margin).
+ * Aspect ratio locked → scaled to fit, centered, proportions kept.
+ * Aspect ratio unlocked → stretched to fill the page area exactly (e.g. a scanned form to A4).
+ * `stretch` overrides the lock state when given.
+ */
+export function fitSelectedToPage(stretch = null) {
   const el = selected(), p = currentPage();
   if (!el) return;
+  const m = Math.max(0, Math.min(state.ui.fitMargin, p.w / 2 - 1, p.h / 2 - 1));
+  const area = { x: m, y: m, w: p.w - 2 * m, h: p.h - 2 * m };
+  // A 90°/270° element occupies its frame rotated, so fit against the swapped area.
+  const quarterTurned = Math.abs(normalizedAngle(el.rotation || 0)) % 180 === 90;
+  const tw = quarterTurned ? area.h : area.w, th = quarterTurned ? area.w : area.h;
+  const fill = stretch ?? !el.aspectLocked;
+  const size = fill ? { w: tw, h: th } : aspectFit(el.w, el.h, { x: 0, y: 0, w: tw, h: th });
   checkpoint();
-  Object.assign(el, aspectFit(el.w, el.h, { x: 0, y: 0, w: p.w, h: p.h }), { rotation: 0 });
+  el.w = size.w; el.h = size.h;
+  el.x = area.x + area.w / 2 - size.w / 2;
+  el.y = area.y + area.h / 2 - size.h / 2;
+  if (!quarterTurned) el.rotation = 0;
+  emit('doc');
+}
+
+/** Natural width ÷ height of the element's content (after any perspective correction). */
+export function naturalAspect(el) {
+  const a = el && assets.get(el.asset);
+  if (!a) return null;
+  if (el.kind === 'image') {
+    if (isFullQuad(el.quad)) return a.w / a.h;
+    const o = quadOutputSize(el.quad, a.w, a.h);
+    return o.h > 0 ? o.w / o.h : null;
+  }
+  if (el.kind === 'pdf') { const s = a.pages && a.pages[el.pageIndex]; return s && s.h > 0 ? s.w / s.h : null; }
+  return null;
+}
+
+/** Undoes any stretching: keeps the width and centre, restores the content's true proportions. */
+export function restoreProportions() {
+  const el = selected();
+  const aspect = naturalAspect(el);
+  if (!el || !aspect) return;
+  checkpoint();
+  const [cx, cy] = center(el);
+  el.h = el.w / aspect;
+  el.y = cy - el.h / 2; el.x = cx - el.w / 2;
+  emit('doc');
+}
+
+export function isStretched(el) {
+  const aspect = naturalAspect(el);
+  if (!aspect || !(el.h > 0)) return false;
+  return Math.abs(el.w / el.h - aspect) / aspect > 0.005;
+}
+
+export function setAspectLocked(id, locked) {
+  const f = findElement(id);
+  if (!f || f.el.aspectLocked === locked) return;
+  checkpoint();
+  f.el.aspectLocked = locked;
   emit('doc');
 }
 

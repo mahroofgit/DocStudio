@@ -1,7 +1,7 @@
 // Scan pipeline (web port of ScanFilterManager.swift + DocumentDetector.swift).
 //
-// Order: perspective → illumination flattening → exposure → color controls → gamma
-//        → monochrome / threshold → sharpening.
+// Order: perspective → paper-illumination flattening → automatic levels → exposure
+//        → color controls → gamma → adaptive B&W → sharpening.
 // Runs in a Web Worker so the canvas stays responsive while sliders move.
 
 'use strict';
@@ -108,175 +108,295 @@ function perspectiveCorrect(src, quad) {
   return { w: W, h: H, data: out };
 }
 
-const LR = 0.2125, LG = 0.7154, LB = 0.0721;   // Rec.709 luma, as Core Image
+const LR = 0.2125, LG = 0.7154, LB = 0.0721;   // Rec.709 luma, as Core Image's colour controls
+const luma = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
+/**
+ * Document pipeline (port of the adaptive ScanFilterManager):
+ *   paper-illumination flattening → automatic black/white levels → mid-tone density
+ *   → exposure / saturation / contrast / gamma → adaptive B&W → sharpening.
+ * Everything is measured from the photo itself, so the result adapts to each image.
+ */
 function applyFilters(img, s, inPlace) {
   const { w, h } = img;
   const src = img.data;
   const out = inPlace ? src : new Uint8ClampedArray(src.length);
-  const n = w * h;
+  const doc = s.mode !== 'original';
 
-  const light = s.mode !== 'original' ? illuminationMap(img) : null;
+  // Pass A — divide by the paper's colour (8-bit result), alpha copied.
+  let levelLUT = null;
+  if (doc) {
+    const light = illuminationMap(img);
+    if (light) divideByLight(src, out, w, h, light);
+    else if (!inPlace) out.set(src);
+    const { black, white } = toneRange(out, w, h);
+    levelLUT = new Float32Array(256);
+    const span = Math.max(0.05, white - black);
+    for (let v = 0; v < 256; v++) {
+      const t = Math.min(1, Math.max(0, (v / 255 - black) / span));
+      levelLUT[v] = Math.pow(t, 1.12);           // slightly denser mid-tones keep faint strokes readable
+    }
+  }
+  const input = doc ? out : src;
+
+  // Pass B — tonal and colour controls.
   const expo = Math.pow(2, s.exposure || 0);
   const mono = s.mode === 'blackWhite' || s.mode === 'grayscale';
-  const sat = mono ? 0 : s.saturation;
-  const con = s.contrast;
-  const power = 1 / Math.max(0.05, s.gamma);
-  const curve = s.mode === 'blackWhite'
-    ? (s.hardThreshold ? hardCurve(s.threshold) : softCurve(s.threshold)) : null;
-
-  // Per-pixel tonal work: gamma and the B&W curve go through 4096-entry LUTs.
+  const sat = mono ? 0 : (s.saturation ?? 1) * (s.mode === 'colorScan' ? 1.12 : 1);
+  const con = s.contrast ?? 1;
+  const power = 1 / Math.max(0.05, s.gamma ?? 1);
   const L = 4096;
   const gammaLUT = new Float32Array(L + 1);
   for (let i = 0; i <= L; i++) gammaLUT[i] = power === 1 ? i / L : Math.pow(i / L, power);
-  const curveLUT = curve ? new Float32Array(L + 1) : null;
-  if (curve) for (let i = 0; i <= L; i++) curveLUT[i] = curve(i / L);
-  const lut = (t, v) => t[v <= 0 ? 0 : v >= 1 ? L : (v * L + 0.5) | 0];
+  const lut = (v) => gammaLUT[v <= 0 ? 0 : v >= 1 ? L : (v * L + 0.5) | 0];
 
-  let lightAt = null;
-  if (light) {
-    const { lw, lh, ld, scale } = light;
-    lightAt = (x, y, c) => {
-      let fx = (x + 0.5) * scale - 0.5, fy = (y + 0.5) * scale - 0.5;
-      if (fx < 0) fx = 0; else if (fx > lw - 1) fx = lw - 1;
-      if (fy < 0) fy = 0; else if (fy > lh - 1) fy = lh - 1;
-      const x0 = fx | 0, y0 = fy | 0, x1 = Math.min(lw - 1, x0 + 1), y1 = Math.min(lh - 1, y0 + 1);
-      const ax = fx - x0, ay = fy - y0;
-      const a = ld[(y0 * lw + x0) * 3 + c], b = ld[(y0 * lw + x1) * 3 + c];
-      const d = ld[(y1 * lw + x0) * 3 + c], e = ld[(y1 * lw + x1) * 3 + c];
-      const top = a + (b - a) * ax, bot = d + (e - d) * ax;
-      return top + (bot - top) * ay;
-    };
-  }
-
-  for (let y = 0, p = 0; y < h; y++) {
-    for (let x = 0; x < w; x++, p += 4) {
-      let r = src[p] / 255, g = src[p + 1] / 255, b = src[p + 2] / 255;
-      if (lightAt) {
-        r = Math.min(1, r / Math.max(1 / 255, lightAt(x, y, 0)));
-        g = Math.min(1, g / Math.max(1 / 255, lightAt(x, y, 1)));
-        b = Math.min(1, b / Math.max(1 / 255, lightAt(x, y, 2)));
-      }
-      if (expo !== 1) { r *= expo; g *= expo; b *= expo; }
-      if (sat !== 1) {
-        const l = LR * r + LG * g + LB * b;
-        r = l + (r - l) * sat; g = l + (g - l) * sat; b = l + (b - l) * sat;
-      }
-      if (con !== 1) { r = (r - 0.5) * con + 0.5; g = (g - 0.5) * con + 0.5; b = (b - 0.5) * con + 0.5; }
-      r = lut(gammaLUT, r); g = lut(gammaLUT, g); b = lut(gammaLUT, b);
-      if (mono) {
-        let l = LR * r + LG * g + LB * b;
-        if (curveLUT) l = lut(curveLUT, l);
-        r = g = b = l;
-      }
-      out[p] = r * 255 + 0.5; out[p + 1] = g * 255 + 0.5; out[p + 2] = b * 255 + 0.5;
-      out[p + 3] = src[p + 3];
+  for (let p = 0, n = w * h * 4; p < n; p += 4) {
+    let r, g, b;
+    if (levelLUT) { r = levelLUT[input[p]]; g = levelLUT[input[p + 1]]; b = levelLUT[input[p + 2]]; }
+    else { r = input[p] / 255; g = input[p + 1] / 255; b = input[p + 2] / 255; }
+    if (expo !== 1) { r *= expo; g *= expo; b *= expo; }
+    if (sat !== 1) {
+      const l = LR * r + LG * g + LB * b;
+      r = l + (r - l) * sat; g = l + (g - l) * sat; b = l + (b - l) * sat;
     }
+    if (con !== 1) { r = (r - 0.5) * con + 0.5; g = (g - 0.5) * con + 0.5; b = (b - 0.5) * con + 0.5; }
+    out[p] = lut(r) * 255 + 0.5; out[p + 1] = lut(g) * 255 + 0.5; out[p + 2] = lut(b) * 255 + 0.5;
+    out[p + 3] = input[p + 3];
   }
 
-  if (s.sharpness > 0) sharpenLuminance(out, w, h, s.sharpness, 1.5);
+  if (s.mode === 'blackWhite') adaptiveBinarize(out, w, h, s.inkSensitivity ?? 0.5, !!s.hardThreshold);
+  if (s.sharpness > 0 && !(s.mode === 'blackWhite' && s.hardThreshold)) sharpenLuminance(out, w, h, s.sharpness, 1.5);
   return { w, h, data: out };
 }
 
-/** Paper illumination estimate: ≤512 px copy → max filter (erases ink) → wide blur. */
+// ---------------------------------------------------------------- illumination
+
+/**
+ * Estimates the colour of bare paper at every point of the page.
+ * The image is reduced to ~256 px and cut into 8×8 blocks. Each block's paper colour is the mean
+ * of its brightest pixels. Blocks much darker than the page's paper, or darker than the smooth
+ * lighting around them (logos, photos, shaded boxes), are discarded and the gaps filled by
+ * normalized convolution. Returns a small RGB map plus its scale, or null.
+ */
 function illuminationMap(img) {
   const { w, h, data } = img;
-  const scale = Math.min(1, 512 / Math.max(w, h));
-  const lw = Math.max(1, Math.round(w * scale)), lh = Math.max(1, Math.round(h * scale));
-  const realScaleX = lw / w;
-  // Area-average downsample.
-  const sum = new Float32Array(lw * lh * 3), cnt = new Float32Array(lw * lh);
+  if (w < 32 || h < 32) return null;
+  const block = 8;
+  const scale = 256 / Math.max(w, h);
+  const bw = Math.max(4, Math.round((w * scale) / block)), bh = Math.max(4, Math.round((h * scale) / block));
+  const sw = bw * block, sh = bh * block;
+
+  // Area-average resample to sw × sh (nearest source pixel when upsampling).
+  const acc = new Float32Array(sw * sh * 3), cnt = new Float32Array(sw * sh);
   for (let y = 0; y < h; y++) {
-    const ly = Math.min(lh - 1, (y * lh / h) | 0);
+    const ty = Math.min(sh - 1, ((y * sh) / h) | 0);
     for (let x = 0; x < w; x++) {
-      const lx = Math.min(lw - 1, (x * lw / w) | 0);
-      const i = ly * lw + lx, p = (y * w + x) * 4;
-      sum[i * 3] += data[p]; sum[i * 3 + 1] += data[p + 1]; sum[i * 3 + 2] += data[p + 2]; cnt[i]++;
+      const tx = Math.min(sw - 1, ((x * sw) / w) | 0), t = ty * sw + tx, p = (y * w + x) * 4;
+      acc[t * 3] += data[p]; acc[t * 3 + 1] += data[p + 1]; acc[t * 3 + 2] += data[p + 2]; cnt[t]++;
     }
   }
-  let ld = new Float32Array(lw * lh * 3);
-  for (let i = 0; i < lw * lh; i++) {
-    const c = cnt[i] || 1;
-    ld[i * 3] = sum[i * 3] / c / 255; ld[i * 3 + 1] = sum[i * 3 + 1] / c / 255; ld[i * 3 + 2] = sum[i * 3 + 2] / c / 255;
+  const px = new Float32Array(sw * sh * 3);
+  for (let ty = 0; ty < sh; ty++) for (let tx = 0; tx < sw; tx++) {
+    const t = ty * sw + tx;
+    if (cnt[t]) { px[t * 3] = acc[t * 3] / cnt[t] / 255; px[t * 3 + 1] = acc[t * 3 + 1] / cnt[t] / 255; px[t * 3 + 2] = acc[t * 3 + 2] / cnt[t] / 255; }
+    else {
+      const sx = Math.min(w - 1, (((tx + 0.5) * w) / sw) | 0), sy = Math.min(h - 1, (((ty + 0.5) * h) / sh) | 0), p = (sy * w + sx) * 4;
+      px[t * 3] = data[p] / 255; px[t * 3 + 1] = data[p + 1] / 255; px[t * 3 + 2] = data[p + 2] / 255;
+    }
   }
-  ld = maxFilter3(ld, lw, lh, 7);
-  for (let k = 0; k < 3; k++) ld = boxBlur3(ld, lw, lh, boxRadius(14, k));
-  return { lw, lh, ld, scale: realScaleX };
+
+  const n = bw * bh;
+  const R = new Float32Array(n), G = new Float32Array(n), B = new Float32Array(n), V = new Float32Array(n);
+  const lums = new Float32Array(block * block), sorted = new Float32Array(block * block);
+  for (let by = 0; by < bh; by++) for (let bx = 0; bx < bw; bx++) {
+    let k = 0;
+    for (let y = 0; y < block; y++) for (let x = 0; x < block; x++) {
+      const i = ((by * block + y) * sw + bx * block + x) * 3;
+      lums[k++] = luma(px[i], px[i + 1], px[i + 2]);
+    }
+    sorted.set(lums); sorted.sort();
+    const p90 = sorted[Math.floor((sorted.length - 1) * 0.9)];
+    let r = 0, g = 0, b = 0, c = 0;
+    k = 0;
+    for (let y = 0; y < block; y++) for (let x = 0; x < block; x++, k++) {
+      if (lums[k] < p90 - 0.02) continue;
+      const i = ((by * block + y) * sw + bx * block + x) * 3;
+      r += px[i]; g += px[i + 1]; b += px[i + 2]; c++;
+    }
+    const j = by * bw + bx;
+    R[j] = r / c; G[j] = g / c; B[j] = b / c; V[j] = luma(R[j], G[j], B[j]);
+  }
+
+  const paper = percentile(V, 0.75);
+  if (paper <= 0.05) return null;
+  const mask = new Float32Array(n);
+  for (let j = 0; j < n; j++) mask[j] = V[j] >= 0.55 * paper ? 1 : 0;
+  for (let it = 0; it < 2; it++) {
+    const [sr, sg, sb] = normalizedConvolution([R, G, B], mask, bw, bh, 3);
+    for (let j = 0; j < n; j++) if (mask[j] > 0 && V[j] < 0.9 * luma(sr[j], sg[j], sb[j])) mask[j] = 0;
+  }
+  let kept = 0; for (let j = 0; j < n; j++) kept += mask[j];
+  if (kept < 4) return null;
+  const est = normalizedConvolution([R, G, B], mask, bw, bh, 1.2)
+    .map((ch) => gaussBlur(ch.map((v) => Math.min(1, Math.max(0.03, v))), bw, bh, 0.35));
+  return { bw, bh, map: est, sx: w / bw, sy: h / bh };
 }
 
-function maxFilter3(src, w, h, r) {
-  const tmp = new Float32Array(src.length), out = new Float32Array(src.length);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) for (let c = 0; c < 3; c++) {
-    let m = 0;
-    for (let k = Math.max(0, x - r), e = Math.min(w - 1, x + r); k <= e; k++) { const v = src[(y * w + k) * 3 + c]; if (v > m) m = v; }
-    tmp[(y * w + x) * 3 + c] = m;
+/** photo ÷ paper colour (bilinear map lookup), clamped. */
+function divideByLight(src, out, w, h, light) {
+  const { bw, bh, map, sx, sy } = light;
+  const [MR, MG, MB] = map;
+  const x0 = new Int32Array(w), x1 = new Int32Array(w), fx = new Float32Array(w);
+  for (let x = 0; x < w; x++) {
+    let u = (x + 0.5) / sx - 0.5;
+    u = Math.min(bw - 1, Math.max(0, u));
+    x0[x] = u | 0; x1[x] = Math.min(bw - 1, x0[x] + 1); fx[x] = u - x0[x];
   }
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) for (let c = 0; c < 3; c++) {
-    let m = 0;
-    for (let k = Math.max(0, y - r), e = Math.min(h - 1, y + r); k <= e; k++) { const v = tmp[(k * w + x) * 3 + c]; if (v > m) m = v; }
-    out[(y * w + x) * 3 + c] = m;
+  const rowR = new Float32Array(bw), rowG = new Float32Array(bw), rowB = new Float32Array(bw);
+  for (let y = 0; y < h; y++) {
+    let v = (y + 0.5) / sy - 0.5;
+    v = Math.min(bh - 1, Math.max(0, v));
+    const y0 = v | 0, y1 = Math.min(bh - 1, y0 + 1), fy = v - y0;
+    for (let i = 0; i < bw; i++) {
+      const a = y0 * bw + i, b = y1 * bw + i;
+      rowR[i] = MR[a] + (MR[b] - MR[a]) * fy;
+      rowG[i] = MG[a] + (MG[b] - MG[a]) * fy;
+      rowB[i] = MB[a] + (MB[b] - MB[a]) * fy;
+    }
+    for (let x = 0, p = y * w * 4; x < w; x++, p += 4) {
+      const i0 = x0[x], i1 = x1[x], f = fx[x];
+      const lr = rowR[i0] + (rowR[i1] - rowR[i0]) * f;
+      const lg = rowG[i0] + (rowG[i1] - rowG[i0]) * f;
+      const lb = rowB[i0] + (rowB[i1] - rowB[i0]) * f;
+      out[p] = src[p] / lr + 0.5; out[p + 1] = src[p + 1] / lg + 0.5; out[p + 2] = src[p + 2] / lb + 0.5;   // clamps at 255
+      out[p + 3] = src[p + 3];
+    }
+  }
+}
+
+function percentile(values, p) {
+  if (!values.length) return 0;
+  const s = Float32Array.from(values).sort();
+  return s[Math.floor((s.length - 1) * p)];
+}
+
+/** Separable Gaussian blur with clamped edges (small maps). */
+function gaussBlur(a, w, h, sigma) {
+  const r = Math.max(1, Math.ceil(sigma * 3));
+  const k = new Float32Array(2 * r + 1);
+  let sum = 0;
+  for (let i = -r; i <= r; i++) { k[i + r] = Math.exp(-(i * i) / (2 * sigma * sigma)); sum += k[i + r]; }
+  for (let i = 0; i < k.length; i++) k[i] /= sum;
+  const tmp = new Float32Array(a.length), out = new Float32Array(a.length);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let acc = 0;
+    for (let i = -r; i <= r; i++) acc += k[i + r] * a[y * w + Math.min(w - 1, Math.max(0, x + i))];
+    tmp[y * w + x] = acc;
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let acc = 0;
+    for (let i = -r; i <= r; i++) acc += k[i + r] * tmp[Math.min(h - 1, Math.max(0, y + i)) * w + x];
+    out[y * w + x] = acc;
   }
   return out;
+}
+
+/** Weighted blur that ignores masked-out samples: blur(v·m) / blur(m). */
+function normalizedConvolution(channels, mask, w, h, sigma) {
+  const den = gaussBlur(mask, w, h, sigma);
+  return channels.map((ch) => {
+    let fs = 0, fc = 0;
+    for (let i = 0; i < ch.length; i++) if (mask[i] > 0) { fs += ch[i]; fc++; }
+    const fallback = fc ? fs / fc : 1;
+    const num = gaussBlur(ch.map((v, i) => v * mask[i]), w, h, sigma);
+    return num.map((v, i) => (den[i] > 1e-4 ? v / den[i] : fallback));
+  });
+}
+
+// ---------------------------------------------------------------- levels
+
+/** Black point = darkest ink (0.5th percentile, eased), white point = paper (60th percentile). */
+function toneRange(data, w, h) {
+  const step = Math.max(1, Math.ceil(Math.max(w, h) / 512));
+  const hist = new Float64Array(256);
+  let count = 0;
+  for (let y = 0; y < h; y += step) for (let x = 0; x < w; x += step) {
+    const p = (y * w + x) * 4;
+    hist[Math.min(255, Math.round(luma(data[p], data[p + 1], data[p + 2])))]++;
+    count++;
+  }
+  const pct = (q) => {
+    const target = Math.floor((count - 1) * q);
+    let acc = 0;
+    for (let i = 0; i < 256; i++) { acc += hist[i]; if (acc > target) return i / 255; }
+    return 1;
+  };
+  let black = pct(0.005) * 0.7;
+  let white = Math.min(1, pct(0.6) * 0.985);
+  white = Math.max(white, 0.55);
+  if (white - black < 0.25) black = Math.max(0, white - 0.25);
+  return { black, white };
+}
+
+// ---------------------------------------------------------------- adaptive black & white
+
+/**
+ * Local (Sauvola-style) threshold: a pixel is ink when it is darker than (1 − k) × the mean
+ * brightness around it. A narrow ramp keeps edges anti-aliased; anything genuinely dark stays
+ * black so bold areas don't hollow out. sensitivity 0…1: higher keeps fainter strokes.
+ */
+function adaptiveBinarize(data, w, h, sensitivity, hard) {
+  const n = w * h;
+  const lum = new Uint8Array(n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) lum[i] = luma(data[p], data[p + 1], data[p + 2]) + 0.5;
+  const sigma = Math.max(w, h) * 0.012;
+  let mean = lum;
+  for (let pass = 0; pass < 3; pass++) mean = boxBlurGray(mean, w, h, Math.max(1, Math.round(boxRadius(sigma, pass))));
+  const k = 0.20 + (Math.min(1, Math.max(0, sensitivity)) - 0.5) * 0.16;
+  const omk = 1 - k, ramp = 1 / 0.07;
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const l = lum[i] / 255, m = mean[i] / 255;
+    let v = (l - omk * m) * ramp + 0.5;
+    const dark = (l - 0.40) / 0.15;
+    if (dark < v) v = dark;
+    if (hard) v = v >= 0.5 ? 1 : 0;
+    const o = Math.min(1, Math.max(0, v)) * 255 + 0.5;
+    data[p] = data[p + 1] = data[p + 2] = o;
+  }
 }
 
 // Three box blurs approximate a Gaussian with the given sigma.
 function boxRadius(sigma, pass) {
   const n = 3;
-  const wIdeal = Math.sqrt((12 * sigma * sigma / n) + 1);
+  const wIdeal = Math.sqrt((12 * sigma * sigma) / n + 1);
   let wl = Math.floor(wIdeal); if (wl % 2 === 0) wl--;
   const wu = wl + 2;
-  const mIdeal = (12 * sigma * sigma - n * wl * wl - 4 * n * wl - 3 * n) / (-4 * wl - 4);
-  const m = Math.round(mIdeal);
+  const m = Math.round((12 * sigma * sigma - n * wl * wl - 4 * n * wl - 3 * n) / (-4 * wl - 4));
   return ((pass < m ? wl : wu) - 1) / 2;
 }
 
-function boxBlur3(src, w, h, r) {
-  const tmp = new Float32Array(src.length), out = new Float32Array(src.length);
+/** Box blur of an 8-bit plane with clamped edges (separable, O(n) per pass). */
+function boxBlurGray(src, w, h, r) {
+  const tmp = new Uint8Array(src.length), out = new Uint8Array(src.length);
   const div = 2 * r + 1;
-  for (let y = 0; y < h; y++) for (let c = 0; c < 3; c++) {
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
     let acc = 0;
-    for (let k = -r; k <= r; k++) acc += src[(y * w + Math.min(w - 1, Math.max(0, k))) * 3 + c];
+    for (let k = -r; k <= r; k++) acc += src[row + Math.min(w - 1, Math.max(0, k))];
     for (let x = 0; x < w; x++) {
-      tmp[(y * w + x) * 3 + c] = acc / div;
-      const add = Math.min(w - 1, x + r + 1), rem = Math.max(0, x - r);
-      acc += src[(y * w + add) * 3 + c] - src[(y * w + rem) * 3 + c];
+      tmp[row + x] = (acc / div + 0.5) | 0;
+      acc += src[row + Math.min(w - 1, x + r + 1)] - src[row + Math.max(0, x - r)];
     }
   }
-  for (let x = 0; x < w; x++) for (let c = 0; c < 3; c++) {
+  for (let x = 0; x < w; x++) {
     let acc = 0;
-    for (let k = -r; k <= r; k++) acc += tmp[(Math.min(h - 1, Math.max(0, k)) * w + x) * 3 + c];
+    for (let k = -r; k <= r; k++) acc += tmp[Math.min(h - 1, Math.max(0, k)) * w + x];
     for (let y = 0; y < h; y++) {
-      out[(y * w + x) * 3 + c] = acc / div;
-      const add = Math.min(h - 1, y + r + 1), rem = Math.max(0, y - r);
-      acc += tmp[(add * w + x) * 3 + c] - tmp[(rem * w + x) * 3 + c];
+      out[y * w + x] = (acc / div + 0.5) | 0;
+      acc += tmp[Math.min(h - 1, y + r + 1) * w + x] - tmp[Math.max(0, y - r) * w + x];
     }
   }
   return out;
-}
-
-function hardCurve(t) { return (v) => (v >= t ? 1 : 0); }
-
-/** Soft "photocopy" curve through the same five points as the macOS app (monotone cubic). */
-function softCurve(t) {
-  const xs = [0, Math.max(0.05, t - 0.30), t, Math.min(0.95, t + 0.20), 1];
-  const ys = [0, 0.02, 0.5, 0.98, 1];
-  const n = xs.length, d = [], m = new Array(n);
-  for (let i = 0; i < n - 1; i++) d.push((ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]));
-  m[0] = d[0]; m[n - 1] = d[n - 2];
-  for (let i = 1; i < n - 1; i++) m[i] = d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2;
-  for (let i = 0; i < n - 1; i++) {
-    if (d[i] === 0) { m[i] = m[i + 1] = 0; continue; }
-    const a = m[i] / d[i], b = m[i + 1] / d[i], s = a * a + b * b;
-    if (s > 9) { const k = 3 / Math.sqrt(s); m[i] = k * a * d[i]; m[i + 1] = k * b * d[i]; }
-  }
-  return (v) => {
-    if (v <= 0) return 0; if (v >= 1) return 1;
-    let i = 0; while (i < n - 2 && v > xs[i + 1]) i++;
-    const hh = xs[i + 1] - xs[i], tt = (v - xs[i]) / hh;
-    const t2 = tt * tt, t3 = t2 * tt;
-    return Math.min(1, Math.max(0, (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + tt) * hh * m[i] +
-      (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * hh * m[i + 1]));
-  };
 }
 
 /** Unsharp mask on luminance only (like CISharpenLuminance). */

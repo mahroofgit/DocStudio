@@ -10,7 +10,7 @@ const SHELL = [
   'css/app.css',
   'js/main.js', 'js/ui.js', 'js/canvas.js', 'js/model.js', 'js/geometry.js', 'js/imaging.js',
   'js/pdfsupport.js', 'js/render.js', 'js/export.js', 'js/zip.js', 'js/store.js', 'js/icons.js',
-  'js/perspective.js', 'js/scan-worker.js',
+  'js/perspective.js', 'js/scan-worker.js', 'js/exportui.js', 'js/png.js', 'js/pdfcrypt.js', 'js/ocr.js',
   'vendor/pdf.min.js', 'vendor/pdf.worker.min.js', 'vendor/pdf-lib.min.js',
   'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/favicon-32.png',
 ];

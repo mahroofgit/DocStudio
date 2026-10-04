@@ -25,6 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Tests
+        run: |
+          node tests/scan.test.js
+          node tests/crypto.test.mjs
+
       - name: Stamp build for offline cache refresh
         run: sed -i "s/__BUILD__/${GITHUB_SHA::12}/" sw.js
 

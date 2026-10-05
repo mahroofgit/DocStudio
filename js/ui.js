@@ -15,7 +15,7 @@ import { openCornerEditor } from './perspective.js';
 import { TOOLS, PALETTE, tool as toolInfo, isMarkup } from './markup.js';
 import { pointerPos } from './canvas.js';
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.2.1';
 const $ = (s) => document.querySelector(s);
 
 // ------------------------------------------------------------------ DOM helpers
@@ -580,7 +580,7 @@ function buildScanPanel(body, title) {
   title.append(h('div', { class: 'sel-name', html: icon('scan') }, h('span', {}, 'Document Scan')));
   if (!el0 || el0.kind !== 'image') {
     body.append(section(null,
-      h('p', { class: 'muted' }, 'Select a photo on the page, or scan a new document. Scan Enhance finds the page edges, straightens the paper and cleans up the lighting.'),
+      h('p', { class: 'muted' }, 'Select a photo on the page, or scan a new document. Scan Enhance finds the page edges, straightens the paper, cleans up the lighting and fits it to the page.'),
       h('div', { class: 'btn-group' },
         btn(icon('camera') + 'Scan Document', () => pickFiles('camera', true), 'btn primary'),
         btn(icon('photo') + 'From Photos', () => pickFiles('photos', true), 'btn'))));
@@ -795,7 +795,7 @@ function initPickers() {
 
 function openAddSheet() {
   const s = sheet('Add', h('div', { class: 'sheet-list' },
-    sheetItem('scan', 'Scan Document', 'Take a photo — edges, perspective and lighting are fixed automatically', () => { s.close(); pickFiles('camera', true); }),
+    sheetItem('scan', 'Scan Document', 'Take a photo — edges, perspective and lighting are fixed, and it fits the page', () => { s.close(); pickFiles('camera', true); }),
     sheetItem('camera', 'Take Photo', 'Place a photo as-is', () => { s.close(); pickFiles('camera'); }),
     sheetItem('photo', 'Photo Library', 'Choose one or more photos', () => { s.close(); pickFiles('photos'); }),
     sheetItem('file', 'Files', 'Images or PDF documents (each PDF page becomes a page)', () => { s.close(); pickFiles('files'); }),

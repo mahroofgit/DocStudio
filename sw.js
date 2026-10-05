@@ -4,7 +4,7 @@
 // version, and the cached copy is only used offline. Large vendor files and icons never change
 // for a given path, so they're cache-first. This works the same whether the site is published
 // by the Actions workflow or by GitHub's branch build.
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 const CACHE = `docprint-${VERSION}`;
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',

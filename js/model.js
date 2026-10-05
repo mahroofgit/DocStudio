@@ -578,8 +578,15 @@ export function align(a) {
  * `stretch` overrides the lock state when given.
  */
 export function fitSelectedToPage(stretch = null) {
-  const el = selected(), p = currentPage();
-  if (!el) return;
+  const el = selected();
+  if (el) fitElementToPage(el.id, stretch);
+}
+
+/** Fit to Page for any element on its own page. `undoable: false` folds it into the caller's undo step. */
+export function fitElementToPage(id, stretch = null, { undoable = true } = {}) {
+  const f = findElement(id);
+  if (!f) return;
+  const el = f.el, p = f.page;
   const m = Math.max(0, Math.min(state.ui.fitMargin, p.w / 2 - 1, p.h / 2 - 1));
   const area = { x: m, y: m, w: p.w - 2 * m, h: p.h - 2 * m };
   // A 90°/270° element occupies its frame rotated, so fit against the swapped area.
@@ -587,7 +594,7 @@ export function fitSelectedToPage(stretch = null) {
   const tw = quarterTurned ? area.h : area.w, th = quarterTurned ? area.w : area.h;
   const fill = stretch ?? !el.aspectLocked;
   const size = fill ? { w: tw, h: th } : aspectFit(el.w, el.h, { x: 0, y: 0, w: tw, h: th });
-  checkpoint();
+  if (undoable) checkpoint();
   el.w = size.w; el.h = size.h;
   el.x = area.x + area.w / 2 - size.w / 2;
   el.y = area.y + area.h / 2 - size.h / 2;
@@ -724,7 +731,11 @@ async function fixAspect(id) {
   } catch (e) { console.warn(e); }
 }
 
-/** One-tap "Scan Enhance": detect the page edges, unwarp, apply the color-scan preset. */
+/**
+ * One-tap "Scan Enhance": detect the page edges, unwarp, apply the color-scan preset, then fit the
+ * result to the current page with the regular Fit to Page rules (keep proportions when the aspect
+ * ratio is locked, fill the page when it isn't; fit margin respected). One undo reverts it all.
+ */
 export async function scanEnhance(id = state.ui.selId) {
   const f = id && findElement(id);
   if (!f || f.el.kind !== 'image') { hooks.alert('Select a photo on the page first, then choose Scan Enhance.'); return; }
@@ -741,6 +752,7 @@ export async function scanEnhance(id = state.ui.selId) {
   emit('doc', 'sel');
   if (quad) await fixAspect(id);
   else hooks.toast("Couldn't find the page edges — use Edit Corners to place them.");
+  fitElementToPage(id, null, { undoable: false });
 }
 
 // Re-render when processed previews / PDF pages arrive.

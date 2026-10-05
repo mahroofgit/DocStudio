@@ -6,7 +6,7 @@ Document layout and scan clean-up in the browser, built for iPhone (also works o
 
 ## Features
 
-- **Scan Document:** take a photo; the page edges are found, the perspective is straightened and the lighting is evened out automatically.
+- **Scan Document / Scan Enhance:** the page edges are found, the perspective is straightened, the lighting is evened out, and the result is fitted to the current page using the Fit to Page rules (keep proportions, or fill the page when the aspect lock is off; margin respected). One undo reverts it.
 - **Edit Corners:** place the four corners yourself, with a magnifying loupe and a live preview.
 - **Adaptive scanning:** the lighting map is built only from areas that look like bare paper (logos, photos and shaded boxes keep their tone), and black / white levels are measured from each photo automatically.
 - **Document Scan filters:** Original / Color / B&W / Grayscale, B&W ink sensitivity (local threshold that keeps faint and thin strokes), hard 1-bit threshold, exposure, contrast, saturation, gamma, sharpness.

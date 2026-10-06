@@ -22,6 +22,9 @@ self.onmessage = (e) => {
       if (!src) throw new Error('missing image data');
       const out = processImage(src, m.quad, m.settings);
       self.postMessage({ id: m.id, w: out.w, h: out.h, data: out.data }, [out.data.buffer]);
+    } else if (m.type === 'detectFrame') {
+      // Live camera frame (already small): find the paper for the viewfinder outline.
+      self.postMessage({ id: m.id, quad: detectQuad({ w: m.w, h: m.h, data: m.data }) });
     } else if (m.type === 'detect') {
       const src = proxies.get(m.asset);
       if (!src) throw new Error('missing image data');

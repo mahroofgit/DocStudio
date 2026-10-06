@@ -8,14 +8,26 @@ import { FULL_QUAD, isFullQuad, quadOutputSize } from './geometry.js';
 const $ = (s) => document.querySelector(s);
 const LOUPE = 124, ZOOM = 3;
 
+/** Corner editor for a photo on the page. */
 export async function openCornerEditor(id) {
   const f = M.findElement(id);
   if (!f || f.el.kind !== 'image') { M.hooks.alert('Select a photo on the page first, then choose Edit Corners.'); return; }
-  const asset = assets.get(f.el.asset);
+  const r = await editQuad(f.el.asset, f.el.quad);
+  if (r) await M.applyPerspective(id, r.quad);
+}
+
+/**
+ * Full-screen corner editor for any image asset. Resolves { quad } (quad null = no correction)
+ * or null when cancelled. Used by the editor and by the scan review.
+ */
+export async function editQuad(assetId, startQuad) {
+  const asset = assets.get(assetId);
   M.busy(true);
   try { await ensureImageReady(asset); } finally { M.busy(false); }
+  let done;
+  const finished = new Promise((res) => { done = res; });
 
-  let quad = (f.el.quad || FULL_QUAD).map((p) => [...p]);
+  let quad = (startQuad || FULL_QUAD).map((p) => [...p]);
   let showResult = true;          // the Mac editor always shows the result beside the photo
   let resultGen = 0;
 
@@ -166,11 +178,11 @@ export async function openCornerEditor(id) {
 
   root.querySelector('header').addEventListener('click', async (e) => {
     const a = e.target.closest('[data-a]')?.dataset.a;
-    if (a === 'cancel') close();
+    if (a === 'cancel') { close(); done(null); }
     if (a === 'apply') {
       if (!isConvex(quad)) { M.hooks.alert('The corners cross over each other. Place them in order around the page: top-left, top-right, bottom-right, bottom-left.'); return; }
       close();
-      await M.applyPerspective(id, quad);
+      done({ quad: isFullQuad(quad) ? null : quad });
     }
   });
   root.querySelector('footer').addEventListener('click', async (e) => {
@@ -184,10 +196,11 @@ export async function openCornerEditor(id) {
     }
     if (a === 'reset') { quad = FULL_QUAD.map((p) => [...p]); draw(); updateResult(); }
     if (a === 'preview') { showResult = !showResult; b.classList.toggle('on', showResult); updateResult(); }
-    if (a === 'remove') { close(); await M.applyPerspective(id, null); }
+    if (a === 'remove') { close(); done({ quad: null }); }
   });
 
   requestAnimationFrame(() => { layout(); updateResult(); });
+  return finished;
 }
 
 function isConvex(q) {

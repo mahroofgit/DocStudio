@@ -141,54 +141,184 @@ function repairSelection() {
   if (!currentPage().elements.some((e) => e.id === state.ui.selId)) state.ui.selId = null;
 }
 
-// ------------------------------------------------------------------ autosave
+// ------------------------------------------------------------------ document library & autosave
+//
+// Every document is its own record in the library. The open document lives in `state.doc`
+// and is saved continuously; its images / PDFs are loaded into memory only while it's open.
 
-let saveTimer = null;
+state.docId = null;
+const libListeners = new Set();
+export const onLibraryChange = (fn) => libListeners.add(fn);
+const libChanged = () => libListeners.forEach((fn) => fn());
+
+let saveTimer = null, thumbTimer = null;
+let docCreated = 0;
 function scheduleSave() {
+  if (!state.docId) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveNow, 700);
 }
-export function saveNow() {
+
+export async function saveNow() {
   clearTimeout(saveTimer);
-  return store.set('doc', { doc: state.doc, pageId: state.ui.pageId, savedAt: Date.now() });
+  if (!state.docId) return;
+  const prev = await store.getDoc(state.docId);
+  await store.putDoc({
+    id: state.docId, title: state.doc.title, created: prev?.created || docCreated || Date.now(), modified: Date.now(),
+    pageCount: state.doc.pages.length, doc: state.doc, pageId: state.ui.pageId, thumb: prev?.thumb || null,
+    thumbSig: prev?.thumbSig || null,
+  });
+  scheduleThumb();
+  libChanged();
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveNow(); });
 window.addEventListener('pagehide', () => saveNow());
 
-export async function loadSaved() {
-  const saved = await store.get('doc');
-  const recs = await store.allAssets();
-  for (const r of recs) assets.set(r.id, { ...r });
-  if (saved && saved.doc && saved.doc.pages && saved.doc.pages.length) {
-    state.doc = migrateDoc(saved.doc);
-    state.doc.guides = state.doc.guides || [];
-    state.ui.pageId = saved.pageId;
-    repairSelection();
-  }
-  // Garbage-collect assets nothing references any more.
-  const used = referencedAssets(JSON.stringify(state.doc));
-  const orphans = recs.filter((r) => !used.has(r.id)).map((r) => r.id);
-  orphans.forEach(forgetAsset);
-  store.deleteAssets(orphans);
-  emit('doc', 'sel', 'view');
+/** Library thumbnail: the first page, rendered small (after edits settle). */
+function scheduleThumb() {
+  clearTimeout(thumbTimer);
+  thumbTimer = setTimeout(async () => {
+    const id = state.docId;
+    if (!id) return;
+    const first = state.doc.pages[0];
+    const sig = JSON.stringify(first);
+    const rec = await store.getDoc(id);
+    if (!rec || rec.thumbSig === sig) return;
+    try {
+      const { renderPage } = await import('./render.js');
+      const c = await renderPage(first, 240 / Math.max(first.w, first.h));
+      const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.8));
+      c.width = c.height = 0;
+      const cur = await store.getDoc(id);
+      if (!cur || state.docId !== id) return;
+      await store.putDoc({ ...cur, thumb: blob, thumbSig: sig });
+      libChanged();
+    } catch (e) { console.warn('thumbnail failed', e); }
+  }, 1500);
 }
+
 function referencedAssets(json) {
   const set = new Set();
   for (const m of json.matchAll(/"asset":"([^"]+)"/g)) set.add(m[1]);
   return set;
 }
 
-export async function newDocument() {
-  checkpoint();
+/** First launch after the library arrived: the single saved document becomes the first entry. */
+export async function initLibrary() {
+  const legacy = await store.get('doc');
+  if (legacy && legacy.doc && legacy.doc.pages && legacy.doc.pages.length) {
+    const hasContent = legacy.doc.pages.some((p) => p.elements.length) || legacy.doc.pages.length > 1;
+    if (hasContent) {
+      const now = Date.now();
+      await store.putDoc({ id: uid(), title: legacy.doc.title || 'Untitled', created: legacy.savedAt || now, modified: legacy.savedAt || now,
+        pageCount: legacy.doc.pages.length, doc: migrateDoc(legacy.doc), pageId: legacy.pageId, thumb: null, thumbSig: null });
+    }
+    await store.del('doc');
+  }
+  await collectGarbage();
+}
+
+/** Deletes stored images / PDFs that no document uses any more. */
+async function collectGarbage() {
+  const docs = await store.allDocs();
+  const used = new Set();
+  for (const d of docs) referencedAssets(JSON.stringify(d.doc)).forEach((id) => used.add(id));
+  if (state.docId) referencedAssets(JSON.stringify(state.doc)).forEach((id) => used.add(id));
+  const all = await store.assetIds();
+  await store.deleteAssets(all.filter((id) => !used.has(id) && !assets.has(id)));
+}
+
+export async function listDocuments() {
+  const docs = await store.allDocs();
+  return docs.map(({ id, title, created, modified, pageCount, thumb }) => ({ id, title, created, modified, pageCount, thumb }))
+    .sort((a, b) => b.modified - a.modified);
+}
+
+function releaseAssets(keep) {
+  for (const id of [...assets.keys()]) if (!keep || !keep.has(id)) forgetAsset(id);
+}
+
+/** Opens a document from the library into the editor. */
+export async function openDocument(id, keep = null) {
+  if (state.docId === id) return true;
+  await closeDocument(keep);
+  const rec = await store.getDoc(id);
+  if (!rec) return false;
+  const doc = migrateDoc(rec.doc);
+  doc.guides = doc.guides || [];
+  const ids = [...referencedAssets(JSON.stringify(doc))];
+  const recs = await store.getAssets(ids);
+  for (const r of recs) if (r) assets.set(r.id, { ...r });
+  state.doc = doc;
+  state.docId = id;
+  docCreated = rec.created;
+  state.ui.pageId = rec.pageId;
+  state.ui.selId = null;
+  state.ui.tool = 'select';
+  undoStack.length = 0; redoStack.length = 0;
+  repairSelection();
+  await store.set('lastDoc', id);
+  emit('doc', 'sel', 'view');
+  return true;
+}
+
+/** Saves and closes the open document (back to the library). */
+export async function closeDocument(keep = null) {
+  if (!state.docId) return;
+  await saveNow();
+  state.docId = null;
+  releaseAssets(keep);
   state.doc = newDoc();
   state.ui.pageId = state.doc.pages[0].id;
   state.ui.selId = null;
   undoStack.length = 0; redoStack.length = 0;
-  emit('doc', 'sel', 'view');
-  await saveNow();
-  const all = await store.allAssets();
-  all.forEach((r) => forgetAsset(r.id));
-  await store.clearAssets();
+  libChanged();
+}
+
+/** Creates an empty document, opens it and returns its id. */
+export async function createDocument(title = null, keep = null) {
+  await closeDocument(keep);
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const doc = newDoc();
+  doc.title = title || `Scan ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}.${pad(d.getMinutes())}`;
+  const id = uid();
+  const now = Date.now();
+  await store.putDoc({ id, title: doc.title, created: now, modified: now, pageCount: 1, doc, pageId: doc.pages[0].id, thumb: null, thumbSig: null });
+  await openDocument(id, keep);
+  return id;
+}
+
+export async function renameDocument(id, title) {
+  title = (title || '').trim() || 'Untitled';
+  if (id === state.docId) { rename(title); await saveNow(); return; }
+  const rec = await store.getDoc(id);
+  if (!rec) return;
+  rec.title = title; rec.doc.title = title; rec.modified = Date.now();
+  await store.putDoc(rec);
+  libChanged();
+}
+
+export async function duplicateDocument(id) {
+  if (id === state.docId) await saveNow();
+  const rec = await store.getDoc(id);
+  if (!rec) return null;
+  const copy = { ...rec, id: uid(), title: `${rec.title} copy`, created: Date.now(), modified: Date.now(), doc: { ...rec.doc, title: `${rec.title} copy` } };
+  await store.putDoc(copy);
+  libChanged();
+  return copy.id;
+}
+
+export async function deleteDocument(id) {
+  if (id === state.docId) { await closeDocument(); }
+  await store.deleteDoc(id);
+  await collectGarbage();
+  libChanged();
+}
+
+/** Kept for the editor's menu: starts a fresh document in the library. */
+export async function newDocument() {
+  await createDocument('Untitled');
 }
 
 export function rename(title) {
@@ -325,6 +455,38 @@ export async function importFiles(files, { autoScan = false, point = null } = {}
       busy(false);
     }
   }
+}
+
+/**
+ * Adds reviewed scans as pages (one scan per page, fitted to the page with the Fit to Page rules).
+ * scans: [{ asset, quad, scan, rotation }]. Replaces the document's only page if it's empty.
+ */
+export function addScannedPages(scans) {
+  if (!scans.length) return;
+  const P = state.doc.pages;
+  const base = currentPage() && currentPage().elements.length ? currentPage() : null;
+  const paper = base ? { w: Math.min(base.w, base.h), h: Math.max(base.w, base.h) } : { w: defaultPaper.w, h: defaultPaper.h };
+  const newPages = scans.map((sc) => {
+    const a = assets.get(sc.asset);
+    const out = isFullQuad(sc.quad) ? { w: a.w, h: a.h } : quadOutputSize(sc.quad, a.w, a.h);
+    const quarter = Math.abs(normalizedAngle(sc.rotation || 0)) % 180 === 90;
+    const landscape = quarter ? out.h > out.w : out.w > out.h;
+    const page = { id: uid(), w: landscape ? paper.h : paper.w, h: landscape ? paper.w : paper.h, elements: [] };
+    const el = {
+      id: uid(), kind: 'image', asset: sc.asset, x: 0, y: 0, w: out.w, h: out.h, rotation: normalizedAngle(sc.rotation || 0),
+      aspectLocked: true, opacity: 1, name: a.name, quad: isFullQuad(sc.quad) ? null : sc.quad, scan: { ...DEFAULT_SCAN, ...sc.scan },
+    };
+    page.elements.push(el);
+    return page;
+  });
+  checkpoint();
+  const onlyEmpty = P.length === 1 && P[0].elements.length === 0;
+  if (onlyEmpty) state.doc.pages = newPages;
+  else P.splice(currentPageIndex() + 1, 0, ...newPages);
+  for (const pg of newPages) fitElementToPage(pg.elements[0].id, false, { undoable: false });
+  state.ui.pageId = newPages[0].id;
+  state.ui.selId = null;
+  emit('doc', 'sel', 'view');
 }
 
 function addPdfPages(asset) {

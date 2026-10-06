@@ -19,7 +19,7 @@
 <body>
   <div id="app">
     <header id="topbar">
-      <button class="icon-btn" id="btn-menu" aria-label="Menu"></button>
+      <button class="icon-btn" id="btn-back" aria-label="Documents"></button>
       <button id="title-wrap" aria-label="Rename document">
         <span id="doc-title">Untitled</span>
         <span id="doc-sub"></span>
@@ -27,6 +27,7 @@
       <button class="icon-btn" id="btn-undo" aria-label="Undo"></button>
       <button class="icon-btn" id="btn-redo" aria-label="Redo"></button>
       <button class="icon-btn accent" id="btn-export" aria-label="Export"></button>
+      <button class="icon-btn" id="btn-menu" aria-label="Menu"></button>
     </header>
 
     <main id="editor">
@@ -63,6 +64,9 @@
     </nav>
   </div>
 
+  <section id="home" hidden></section>
+  <section id="review" hidden></section>
+  <section id="scanner" hidden></section>
   <div id="sheet-root"></div>
   <div id="persp" hidden></div>
   <div id="toast" role="status" aria-live="polite"></div>

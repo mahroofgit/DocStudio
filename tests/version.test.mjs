@@ -6,7 +6,7 @@ const sw = /VERSION = '([^']+)'/.exec(readFileSync(new URL('../sw.js', import.me
 assert.strictEqual(sw, app, `sw.js VERSION ${sw} ≠ APP_VERSION ${app}`);
 // Every module the app imports must be in the offline list.
 const shell = readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
-for (const f of ['main', 'ui', 'canvas', 'model', 'geometry', 'imaging', 'pdfsupport', 'render', 'export', 'exportui', 'zip', 'store', 'icons', 'perspective', 'scan-worker', 'png', 'pdfcrypt', 'ocr', 'markup']) {
+for (const f of ['main', 'ui', 'canvas', 'model', 'geometry', 'imaging', 'pdfsupport', 'render', 'export', 'exportui', 'zip', 'store', 'icons', 'perspective', 'scan-worker', 'png', 'pdfcrypt', 'ocr', 'markup', 'home', 'scanner', 'review']) {
   assert(shell.includes(`'js/${f}.js'`), `js/${f}.js missing from sw.js SHELL`);
 }
 console.log(`✓ version ${app} consistent; offline list complete`);

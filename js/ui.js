@@ -14,13 +14,15 @@ import { openExporter } from './exportui.js';
 import { openCornerEditor } from './perspective.js';
 import { TOOLS, PALETTE, tool as toolInfo, isMarkup } from './markup.js';
 import { pointerPos } from './canvas.js';
+import { startScan, importToReview } from './scanner.js';
+import { showHome, setHomeHooks } from './home.js';
 
-export const APP_VERSION = '1.2.1';
+export const APP_VERSION = '1.3.0';
 const $ = (s) => document.querySelector(s);
 
 // ------------------------------------------------------------------ DOM helpers
 
-function h(tag, attrs = {}, ...kids) {
+export function h(tag, attrs = {}, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v == null || v === false) continue;
@@ -33,7 +35,7 @@ function h(tag, attrs = {}, ...kids) {
   for (const k of kids.flat()) if (k != null && k !== false) e.append(k instanceof Node ? k : document.createTextNode(String(k)));
   return e;
 }
-const btn = (label, onclick, cls = 'btn', title) => h('button', { class: cls, onclick, 'aria-label': title || null, title: title || null, html: label });
+export const btn = (label, onclick, cls = 'btn', title) => h('button', { class: cls, onclick, 'aria-label': title || null, title: title || null, html: label });
 const section = (title, ...kids) => h('div', { class: 'section' }, title ? h('h3', {}, title) : null, ...kids);
 const row = (...kids) => h('div', { class: 'row' }, ...kids);
 
@@ -174,7 +176,7 @@ export function sheet(title, body, { center = false, onClose, refreshScope } = {
   return { close, card };
 }
 
-function sheetItem(ic, title, sub, onclick, danger = false) {
+export function sheetItem(ic, title, sub, onclick, danger = false) {
   return h('button', { class: 'sheet-item' + (danger ? ' danger' : ''), onclick },
     h('span', { class: 'ic', html: icon(ic) }), h('span', { class: 'tx' }, h('b', {}, title), sub ? h('small', {}, sub) : null));
 }
@@ -183,12 +185,12 @@ export function alertDialog(msg) {
   const s = sheet(null, h('div', {}, h('p', {}, msg), h('div', { class: 'sheet-actions' }, btn('OK', () => s.close(), 'btn primary'))), { center: true });
 }
 
-function confirmDialog(msg, okLabel, onOK, danger = false) {
+export function confirmDialog(msg, okLabel, onOK, danger = false) {
   const s = sheet(null, h('div', {}, h('p', {}, msg), h('div', { class: 'sheet-actions' },
     btn('Cancel', () => s.close()), btn(okLabel, () => { s.close(); onOK(); }, danger ? 'btn danger' : 'btn primary'))), { center: true });
 }
 
-function promptDialog(title, value, onOK, { inputmode = 'text' } = {}) {
+export function promptDialog(title, value, onOK, { inputmode = 'text' } = {}) {
   const input = h('input', { class: 'text-input', value, inputmode, enterkeyhint: 'done', autocomplete: 'off' });
   const ok = () => { s.close(); onOK(input.value); };
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') ok(); });
@@ -200,6 +202,8 @@ function promptDialog(title, value, onOK, { inputmode = 'text' } = {}) {
 
 function initChrome() {
   $('#btn-menu').innerHTML = icon('menu');
+  $('#btn-back').innerHTML = icon('back') + '<span>Docs</span>';
+  $('#btn-back').addEventListener('click', () => { closePanel(); showHome(); });
   $('#btn-undo').innerHTML = icon('undo');
   $('#btn-redo').innerHTML = icon('redo');
   $('#btn-export').innerHTML = icon('share');
@@ -582,7 +586,7 @@ function buildScanPanel(body, title) {
     body.append(section(null,
       h('p', { class: 'muted' }, 'Select a photo on the page, or scan a new document. Scan Enhance finds the page edges, straightens the paper, cleans up the lighting and fits it to the page.'),
       h('div', { class: 'btn-group' },
-        btn(icon('camera') + 'Scan Document', () => pickFiles('camera', true), 'btn primary'),
+        btn(icon('camera') + 'Scan Pages', () => startScan({ mode: 'append' }), 'btn primary'),
         btn(icon('photo') + 'From Photos', () => pickFiles('photos', true), 'btn'))));
     return;
   }
@@ -795,7 +799,7 @@ function initPickers() {
 
 function openAddSheet() {
   const s = sheet('Add', h('div', { class: 'sheet-list' },
-    sheetItem('scan', 'Scan Document', 'Take a photo — edges, perspective and lighting are fixed, and it fits the page', () => { s.close(); pickFiles('camera', true); }),
+    sheetItem('scan', 'Scan Pages', 'Camera with Single or Batch capture, then review each page', () => { s.close(); startScan({ mode: 'append' }); }),
     sheetItem('camera', 'Take Photo', 'Place a photo as-is', () => { s.close(); pickFiles('camera'); }),
     sheetItem('photo', 'Photo Library', 'Choose one or more photos', () => { s.close(); pickFiles('photos'); }),
     sheetItem('file', 'Files', 'Images or PDF documents (each PDF page becomes a page)', () => { s.close(); pickFiles('files'); }),
@@ -823,7 +827,7 @@ function openViewSheet() {
     sheetItem('ruler', 'Calibrate Actual Size…', 'Match the screen to a real card or ruler', () => { s.close(); openCalibration(); })));
 }
 
-function openCalibration() {
+export function openCalibration() {
   let k = calibration();
   // A phone screen is narrower than a bank card, so the card stands upright (54 × 85.6 mm)
   // and the ruler bar is 50 mm (100 mm on wider screens, like the Mac's).
@@ -864,9 +868,9 @@ function openMenuSheet() {
   const [content, sc] = scoped(() => h('div', {},
     h('div', { class: 'sheet-list' },
       sheetItem('doc', 'Rename Document', state.doc.title, () => { s.close(); promptDialog('Document name', state.doc.title, (v) => M.rename(v)); }),
-      sheetItem('pageAdd', 'New Document', 'Start over with a blank page', () => {
+      sheetItem('pageAdd', 'New Document', 'A blank document in your library (this one is saved)', () => {
         s.close();
-        confirmDialog('Start a new document? The current one will be cleared — export it first if you need it.', 'New Document', () => M.newDocument(), true);
+        M.newDocument();
       }),
       sheetItem('ruler', 'Calibrate Actual Size', 'Make 100% zoom match real paper', () => { s.close(); openCalibration(); }),
       sheetItem('home', 'Install on iPhone', 'Add to Home Screen for a full-screen app that works offline', () => { s.close(); openInstallHelp(); })),
@@ -875,11 +879,11 @@ function openMenuSheet() {
       toggle('Snap to guides, edges & centers', () => state.ui.snap, (v) => M.setPref('snap', v)),
       toggle('Show guides', () => state.ui.showGuides, (v) => M.setPref('showGuides', v))),
     h('p', { class: 'muted', style: { textAlign: 'center', marginTop: '10px' } },
-      `DocPrint Studio for iPhone · v${APP_VERSION} · your work is saved on this device automatically`)));
+      `DocPrint Studio for iPhone · v${APP_VERSION} · documents are saved on this device automatically`)));
   s = sheet('DocPrint Studio', content, { refreshScope: sc });
 }
 
-function openInstallHelp() {
+export function openInstallHelp() {
   const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   sheet('Install on iPhone', h('div', {},
     standalone
@@ -901,6 +905,7 @@ export function initUI() {
   M.hooks.busy = (on) => { $('#busy').hidden = !on; };
   canvasHooks.editText = (id) => { M.select(id); openPanel('edit'); focusText(); };
   canvasHooks.contextMenu = openElementMenu;
+  setHomeHooks({ exporter: (fmt) => openExporter(fmt || undefined) });
   canvasHooks.changed = (flags) => {
     if (flags.has('pointer') && flags.size === 1) { updateStatus(); return; }
     updateChrome();

@@ -2,13 +2,16 @@
 
 import { initCanvas } from './canvas.js';
 import { initUI } from './ui.js';
-import { loadSaved, saveNow } from './model.js';
+import { initLibrary, saveNow } from './model.js';
+import { initHome, showHome } from './home.js';
 import { store } from './store.js';
 
 async function start() {
   initUI();
   initCanvas();
-  await loadSaved();
+  initHome();
+  await initLibrary();
+  await showHome();
   store.persist();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     const hadController = !!navigator.serviceWorker.controller;

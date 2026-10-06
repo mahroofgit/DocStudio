@@ -6,6 +6,10 @@ Document layout and scan clean-up in the browser, built for iPhone (also works o
 
 ## Features
 
+- **Document library:** the app opens to Home with quick tools (Smart Scan, Import Images, Import Files, Blank Document), Recents and All Documents (search, sort by recent / created / name). Open, share, rename, duplicate or delete any document; each one is saved on the device as you work.
+- **Camera scanning** (big camera button): live viewfinder that outlines the paper as you aim, **Single** or **Batch** capture, grid, flash where supported, undo last shot, and import from Photos or Files. If the live camera isn't allowed, the iPhone camera is used instead.
+- **Page review** after scanning: go through the pages one by one: **Crop** (corner editor with loupe), **Rotate**, **Filter** (Original / Enhance / Gray / B&W with ink sensitivity, apply to all), **Retake**, **Delete**, drag to reorder, **Add** more. **Done** places one page per scan, fitted to the page, in a new document (or the open one when scanning from the editor).
+
 - **Scan Document / Scan Enhance:** the page edges are found, the perspective is straightened, the lighting is evened out, and the result is fitted to the current page using the Fit to Page rules (keep proportions, or fill the page when the aspect lock is off; margin respected). One undo reverts it.
 - **Edit Corners:** place the four corners yourself, with a magnifying loupe and a live preview.
 - **Adaptive scanning:** the lighting map is built only from areas that look like bare paper (logos, photos and shaded boxes keep their tone), and black / white levels are measured from each photo automatically.

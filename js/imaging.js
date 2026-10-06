@@ -286,6 +286,13 @@ export async function detectDocument(assetId) {
   return res.quad || null;
 }
 
+/** Edge detection on a small live-camera frame (ImageData). */
+export async function detectFrame(imageData) {
+  const { width: w, height: h, data } = imageData;
+  const res = await call({ type: 'detectFrame', w, h, data }, [data.buffer]);
+  return res.quad || null;
+}
+
 /** Unwarp preview for the corner editor (no filters). */
 export async function previewQuad(assetId, quad) {
   const res = await whenDisplay({ asset: assetId, quad, scan: { mode: 'original', exposure: 0, contrast: 1, saturation: 1, gamma: 1, sharpness: 0, hardThreshold: false, threshold: 0.55 } });

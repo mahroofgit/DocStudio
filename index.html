@@ -7,8 +7,8 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="DocPrint">
-  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f3f8fd" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1a1d22" media="(prefers-color-scheme: dark)">
   <meta name="description" content="Document layout and scan clean-up for iPhone: unwarp photos of paper, place them at exact physical sizes, export PDF or Word.">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" href="icons/favicon-32.png">
@@ -35,6 +35,8 @@
       <canvas id="ruler-top" aria-label="Horizontal ruler — drag down to add a guide"></canvas>
       <canvas id="ruler-left" aria-label="Vertical ruler — drag right to add a guide"></canvas>
       <div id="workspace">
+        <img id="nb-prev" class="nb-page" alt="" hidden>
+        <img id="nb-next" class="nb-page" alt="" hidden>
         <div id="page"></div>
         <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
         <div id="empty-hint" hidden>
@@ -42,6 +44,7 @@
         </div>
         <div id="busy" hidden><span class="spinner"></span><span id="busy-text">Working…</span></div>
         <div id="tool-pill" hidden></div>
+        <div id="page-nav" hidden><button data-d="-1" aria-label="Previous page"></button><span></span><button data-d="1" aria-label="Next page"></button></div>
       </div>
       <div id="statusbar" aria-live="off"></div>
     </main>
@@ -64,6 +67,7 @@
     </nav>
   </div>
 
+  <section id="viewer" hidden></section>
   <section id="home" hidden></section>
   <section id="review" hidden></section>
   <section id="scanner" hidden></section>

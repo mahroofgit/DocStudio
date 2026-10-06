@@ -110,7 +110,7 @@ export async function editQuad(assetId, startQuad) {
     ctx.drawImage(img, nx - half, ny - half, half * 2, half * 2, 0, 0, LOUPE, LOUPE);
     // Quad edges through the loupe.
     const L = ([x, y]) => [(x * img.naturalWidth - (nx - half)) * scale, (y * img.naturalHeight - (ny - half)) * scale];
-    ctx.strokeStyle = '#f5a623'; ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#4aa8ff'; ctx.lineWidth = 1.5;
     ctx.beginPath();
     quad.forEach((p, k) => { const [x, y] = L(p); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
     ctx.closePath(); ctx.stroke();

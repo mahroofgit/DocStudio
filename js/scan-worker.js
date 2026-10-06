@@ -44,7 +44,7 @@ function isFull(q) {
 }
 
 function isIdentity(s) {
-  return !s || (s.mode === 'original' && s.exposure === 0 && s.contrast === 1 && s.saturation === 1 &&
+  return !s || (s.mode === 'original' && s.exposure === 0 && !s.brightness && s.contrast === 1 && s.saturation === 1 &&
     s.gamma === 1 && s.sharpness === 0);
 }
 
@@ -147,6 +147,7 @@ function applyFilters(img, s, inPlace) {
   const mono = s.mode === 'blackWhite' || s.mode === 'grayscale';
   const sat = mono ? 0 : (s.saturation ?? 1) * (s.mode === 'colorScan' ? 1.12 : 1);
   const con = s.contrast ?? 1;
+  const bright = s.brightness || 0;
   const power = 1 / Math.max(0.05, s.gamma ?? 1);
   const L = 4096;
   const gammaLUT = new Float32Array(L + 1);
@@ -158,6 +159,7 @@ function applyFilters(img, s, inPlace) {
     if (levelLUT) { r = levelLUT[input[p]]; g = levelLUT[input[p + 1]]; b = levelLUT[input[p + 2]]; }
     else { r = input[p] / 255; g = input[p + 1] / 255; b = input[p + 2] / 255; }
     if (expo !== 1) { r *= expo; g *= expo; b *= expo; }
+    if (bright) { r += bright; g += bright; b += bright; }
     if (sat !== 1) {
       const l = LR * r + LG * g + LB * b;
       r = l + (r - l) * sat; g = l + (g - l) * sat; b = l + (b - l) * sat;

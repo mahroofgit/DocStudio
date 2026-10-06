@@ -7,6 +7,7 @@ import { icon } from './icons.js';
 import { h, btn, sheet, sheetItem, toast, alertDialog, confirmDialog, promptDialog, openCalibration, openInstallHelp, APP_VERSION } from './ui.js';
 import { UNIT_ORDER } from './geometry.js';
 import { startScan, importToReview } from './scanner.js';
+import { showViewer, hideViewer } from './viewer.js';
 
 const $ = (s) => document.querySelector(s);
 let tab = 'home', query = '', sortBy = localStorage.getItem('docSort') || 'modified';
@@ -48,6 +49,7 @@ export function initHome() {
 export async function showHome() {
   await M.closeDocument();
   $('#home').hidden = false;
+  hideViewer();
   render();
 }
 export function hideHome() { $('#home').hidden = true; }
@@ -57,6 +59,7 @@ export const homeVisible = () => !$('#home').hidden;
 export async function openDoc(id) {
   const ok = await M.openDocument(id);
   if (!ok) { alertDialog('That document could not be opened.'); return false; }
+  showViewer();
   hideHome();
   return true;
 }
@@ -67,6 +70,7 @@ async function importFilesAsDocument(files) {
   const images = files.filter((f) => !pdfs.includes(f));
   if (pdfs.length) {
     await M.createDocument(pdfs[0].name.replace(/\.pdf$/i, ''));
+    showViewer();
     hideHome();
     await M.importFiles(pdfs);
     if (images.length) importToReview(images, { mode: 'append' });

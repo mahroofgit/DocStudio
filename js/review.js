@@ -10,6 +10,7 @@ import { confirmDialog, toast } from './ui.js';
 import { editQuad } from './perspective.js';
 import { openCamera, discardSession } from './scanner.js';
 import { hideHome } from './home.js';
+import { showViewer } from './viewer.js';
 
 const $ = (s) => document.querySelector(s);
 const FILTERS = [
@@ -211,12 +212,12 @@ export function openReview(session) {
       const scans = session.pages.map((p) => ({ asset: p.asset, quad: isFullQuad(p.quad) ? null : p.quad, scan: { ...DEFAULT_SCAN, ...p.scan }, rotation: p.rotation }));
       if (session.mode === 'new') {
         await M.createDocument(null, new Set(scans.map((s) => s.asset)));
-        hideHome();
       }
       M.addScannedPages(scans);
       await M.saveNow();
+      if (session.mode === 'new') { showViewer(); hideHome(); }
       close();
-      toast(`${scans.length} page${scans.length === 1 ? '' : 's'} added — fine-tune in Edit and Scan`);
+      toast(`${scans.length} page${scans.length === 1 ? '' : 's'} added`);
     } catch (e) {
       console.error(e);
       btn.disabled = false;

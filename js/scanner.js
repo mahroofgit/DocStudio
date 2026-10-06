@@ -193,8 +193,8 @@ export function openCamera(session, opts = {}) {
       ctx.beginPath();
       shown.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
       ctx.closePath();
-      ctx.fillStyle = 'rgba(64,224,190,.18)'; ctx.fill();
-      ctx.strokeStyle = '#40e0be'; ctx.lineWidth = 3; ctx.lineJoin = 'round'; ctx.stroke();
+      ctx.fillStyle = 'rgba(108,192,255,.2)'; ctx.fill();
+      ctx.strokeStyle = '#6cc0ff'; ctx.lineWidth = 3; ctx.lineJoin = 'round'; ctx.stroke();
     }
   }
 

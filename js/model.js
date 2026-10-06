@@ -12,7 +12,7 @@ import { importPdfFile, onPreviewReady } from './pdfsupport.js';
 import { DEFAULT_STYLE, simplify } from './markup.js';
 
 export const DEFAULT_SCAN = Object.freeze({
-  mode: 'original', exposure: 0, contrast: 1, saturation: 1, gamma: 1, sharpness: 0, hardThreshold: false, inkSensitivity: 0.5,
+  mode: 'original', exposure: 0, brightness: 0, contrast: 1, saturation: 1, gamma: 1, sharpness: 0, hardThreshold: false, inkSensitivity: 0.5,
 });
 // Presets stay neutral: the pipeline measures each photo and sets levels automatically,
 // so the sliders are only for taste.
@@ -22,6 +22,17 @@ export const SCAN_PRESETS = {
   grayscale: { ...DEFAULT_SCAN, mode: 'grayscale', sharpness: 0.3 },
   blackWhite: { ...DEFAULT_SCAN, mode: 'blackWhite' },
 };
+
+/** One-tap looks in Edit → Adjust (each is a full set of scan settings). */
+export const LOOK_PRESETS = [
+  { id: 'original', label: 'Original', settings: { ...DEFAULT_SCAN } },
+  { id: 'enhance', label: 'Enhance', settings: { ...DEFAULT_SCAN, mode: 'colorScan', sharpness: 0.3 } },
+  { id: 'lighten', label: 'Lighten', settings: { ...DEFAULT_SCAN, mode: 'colorScan', exposure: 0.3, gamma: 1.15, sharpness: 0.3 } },
+  { id: 'vivid', label: 'Vivid', settings: { ...DEFAULT_SCAN, mode: 'colorScan', contrast: 1.15, saturation: 1.35, sharpness: 0.4 } },
+  { id: 'photo', label: 'Photo', settings: { ...DEFAULT_SCAN, contrast: 1.08, saturation: 1.12, sharpness: 0.2 } },
+  { id: 'gray', label: 'Gray', settings: { ...DEFAULT_SCAN, mode: 'grayscale', sharpness: 0.3 } },
+  { id: 'bw', label: 'B&W', settings: { ...DEFAULT_SCAN, mode: 'blackWhite' } },
+];
 
 /** Older saved documents used a global B&W threshold; it became the adaptive ink sensitivity. */
 function migrateDoc(doc) {
@@ -445,7 +456,7 @@ export async function importFiles(files, { autoScan = false, point = null } = {}
         const asset = await importImageFile(f);
         const id = addImage(asset, point ? [point[0] + offset, point[1] + offset] : null);
         offset += 18;
-        if (autoScan) await scanEnhance(id);
+        if (autoScan) { await autoCropFit(id); scanEnhance(id); }
       }
     } catch (e) {
       hooks.alert(e.message === 'unsupported image'
@@ -894,13 +905,22 @@ async function fixAspect(id) {
 }
 
 /**
- * One-tap "Scan Enhance": detect the page edges, unwarp, apply the color-scan preset, then fit the
- * result to the current page with the regular Fit to Page rules (keep proportions when the aspect
- * ratio is locked, fill the page when it isn't; fit margin respected). One undo reverts it all.
+ * "Scan Enhance": adaptive clean-up only (paper lighting, automatic levels). Corners, size and
+ * position are left exactly as they are.
  */
-export async function scanEnhance(id = state.ui.selId) {
+export function scanEnhance(id = state.ui.selId) {
   const f = id && findElement(id);
   if (!f || f.el.kind !== 'image') { hooks.alert('Select a photo on the page first, then choose Scan Enhance.'); return; }
+  setScan(id, { ...SCAN_PRESETS.colorScan, inkSensitivity: f.el.scan?.inkSensitivity ?? 0.5 }, 'enhance');
+}
+
+/**
+ * "Auto Crop & Fit": find the paper's edges, straighten it, then fit it to the page with the
+ * Fit to Page rules (keep proportions / fill page, margin). The look is unchanged. One undo step.
+ */
+export async function autoCropFit(id = state.ui.selId) {
+  const f = id && findElement(id);
+  if (!f || f.el.kind !== 'image') { hooks.alert('Select a photo on the page first, then choose Auto Crop & Fit.'); return; }
   busy(true);
   let quad = null;
   try { quad = await detectDocument(f.el.asset); } catch (e) { console.warn(e); }
@@ -909,9 +929,7 @@ export async function scanEnhance(id = state.ui.selId) {
   if (!g) return;
   checkpoint();
   if (quad) g.el.quad = quad;
-  g.el.scan = { ...SCAN_PRESETS.colorScan };
-  state.ui.inspectorTab = 'scan';
-  emit('doc', 'sel');
+  emit('doc');
   if (quad) await fixAspect(id);
   else hooks.toast("Couldn't find the page edges — use Edit Corners to place them.");
   fitElementToPage(id, null, { undoable: false });

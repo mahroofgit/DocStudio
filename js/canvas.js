@@ -8,6 +8,8 @@ import {
 } from './geometry.js';
 import { getDisplay } from './imaging.js';
 import { pdfPreview } from './pdfsupport.js';
+import { renderPage } from './render.js';
+import { icon } from './icons.js';
 import { drawList, svgPath, isMarkup, tool as toolInfo, smoothPath, isLinear, HIGHLIGHT_ALPHA, TOOLS } from './markup.js';
 const TOOLS_BY_KEY = Object.fromEntries(TOOLS.map((t) => [t.key, t.id]));
 
@@ -15,13 +17,14 @@ export const view = { s: 1, px: 0, py: 0, mode: 'fitPage', percent: 100 };
 export const canvasHooks = { editText: () => {}, changed: () => {}, contextMenu: () => {}, pageCreated: () => {} };
 export const pointerPos = { x: null, y: null };
 
-let ws, pageEl, overlay, rulerTop, rulerLeft, cornerBtn;
+let ws, pageEl, overlay, rulerTop, rulerLeft, cornerBtn, nbPrev, nbNext, pageNav;
 const nodes = new Map();
 let op = null;                 // current gesture
 const pointers = new Map();
 let snapLines = { x: null, y: null };
 let lastTap = { time: 0, id: null };
 const HIT = 22;                // touch target radius for handles, px
+const GAP = 14;                // space between side-by-side pages, px
 
 // ------------------------------------------------------------------ real-size zoom
 
@@ -57,15 +60,17 @@ function applyZoomMode() {
   if (!ws) return;
   const W = ws.clientWidth, H = ws.clientHeight, p = M.currentPage(), m = 18;
   if (!W || !H || !p) return;
+  // With several pages, leave room for the neighbours to peek in at the sides.
+  const mx = state.doc.pages.length > 1 ? 34 : m;
   let s = view.s;
-  if (view.mode === 'fitWidth') s = (W - 2 * m) / p.w;
-  else if (view.mode === 'fitPage') s = Math.min((W - 2 * m) / p.w, (H - 2 * m) / p.h);
+  if (view.mode === 'fitWidth') s = (W - 2 * mx) / p.w;
+  else if (view.mode === 'fitPage') s = Math.min((W - 2 * mx) / p.w, (H - 2 * m) / p.h);
   else if (view.mode === 'actual') s = actualScale();
   else if (view.mode === 'percent') s = (actualScale() * view.percent) / 100;
   else { clampPan(); return; }
   view.s = Math.max(0.05, s);
   const pw = p.w * view.s, ph = p.h * view.s;
-  view.px = pw <= W - 2 * m ? (W - pw) / 2 : m;
+  view.px = pw <= W - 2 * mx ? (W - pw) / 2 : mx;
   view.py = ph <= H - 2 * m ? (H - ph) / 2 : m;
 }
 
@@ -96,6 +101,12 @@ export function initCanvas() {
   rulerTop = document.getElementById('ruler-top');
   rulerLeft = document.getElementById('ruler-left');
   cornerBtn = document.getElementById('ruler-corner');
+  nbPrev = document.getElementById('nb-prev');
+  nbNext = document.getElementById('nb-next');
+  pageNav = document.getElementById('page-nav');
+  const [bp, bn] = pageNav.querySelectorAll('button');
+  bp.innerHTML = icon('left'); bn.innerHTML = icon('right');
+  pageNav.addEventListener('click', (e) => { const b = e.target.closest('[data-d]'); if (b) goPage(+b.dataset.d); });
 
   ws.addEventListener('pointerdown', onDown);
   ws.addEventListener('pointermove', onMove);
@@ -165,6 +176,7 @@ export function render(flags) {
   for (const [id, n] of nodes) if (!alive.has(id)) { n.root.remove(); nodes.delete(id); }
 
   ws.classList.toggle('drawing', state.ui.tool !== 'select');
+  updateNeighbours();
   drawOverlay();
   drawRulers();
   cornerBtn.textContent = UNITS[state.ui.unit].symbol;
@@ -419,7 +431,7 @@ function hitElement(x, y) {
 
 function onDown(e) {
   if (e.button > 0) return;
-  if (e.target.closest && e.target.closest('#tool-pill, #busy')) return;   // floating controls
+  if (e.target.closest && e.target.closest('#tool-pill, #busy, #page-nav')) return;   // floating controls
   ws.setPointerCapture(e.pointerId);
   const [x, y] = wsPoint(e);
   pointers.set(e.pointerId, { x, y });
@@ -442,8 +454,9 @@ function onDown(e) {
   const el = hitElement(x, y);
   if (g && !(el && el.id === state.ui.selId)) { op = { ...base, type: 'guide', id: g.id, axis: g.axis }; return; }
   if (el) {
+    const wasSelected = el.id === state.ui.selId;
     M.select(el.id);
-    op = { ...base, type: 'move', id: el.id, start: { x: el.x, y: el.y } };
+    op = { ...base, type: 'move', id: el.id, start: { x: el.x, y: el.y }, wasSelected, px: view.px };
     // Long press = the element's context menu (like right-click on the Mac).
     const lp = op;
     lp.timer = setTimeout(() => {
@@ -451,8 +464,89 @@ function onDown(e) {
     }, 550);
     return;
   }
-  op = { ...base, type: 'pan', px: view.px, py: view.py };
+  op = { ...base, type: 'pan', px: view.px, py: view.py, nb: neighbourAt(x, y) };
 }
+
+// ------------------------------------------------------------------ side-by-side pages
+
+const nbCache = new Map();     // page id → { sig, scale, url, pending }
+const neighbours = () => {
+  const P = state.doc.pages, i = M.currentPageIndex();
+  return { prev: P[i - 1] || null, next: P[i + 1] || null };
+};
+/** Screen rectangles of the previous / next pages, laid out beside the current one. */
+function neighbourRects() {
+  const { prev, next } = neighbours(), cur = M.currentPage(), s = view.s;
+  const midY = view.py + (cur.h * s) / 2;
+  const rect = (p, left) => ({ x: left, y: midY - (p.h * s) / 2, w: p.w * s, h: p.h * s, page: p });
+  return {
+    prev: prev && rect(prev, view.px - GAP - prev.w * s),
+    next: next && rect(next, view.px + cur.w * s + GAP),
+  };
+}
+function neighbourAt(x, y) {
+  const r = neighbourRects();
+  for (const k of ['prev', 'next']) { const q = r[k]; if (q && x >= q.x && x <= q.x + q.w && y >= q.y && y <= q.y + q.h) return k; }
+  return null;
+}
+function placeNeighbour(img, r) {
+  if (!r) { img.hidden = true; return; }
+  img.hidden = false;
+  img.style.transform = `translate(${r.x}px, ${r.y}px)`;
+  img.style.width = `${r.w}px`; img.style.height = `${r.h}px`;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const scale = Math.min(view.s * dpr, 3);
+  const sig = JSON.stringify(r.page);
+  let c = nbCache.get(r.page.id);
+  const fresh = c && c.sig === sig && c.scale >= scale * 0.8;
+  if (c && c.url && img.dataset.url !== c.url) { img.src = c.url; img.dataset.url = c.url; }
+  if (!c || c.url == null) { img.removeAttribute('src'); delete img.dataset.url; }
+  if (fresh || (c && c.pending)) return;
+  c = c || {};
+  c.pending = true;
+  nbCache.set(r.page.id, c);
+  renderPage(r.page, scale).then((cv) => new Promise((res) => cv.toBlob((b) => { cv.width = cv.height = 0; res(b); }, 'image/jpeg', 0.85)))
+    .then((blob) => {
+      const old = c.url;
+      Object.assign(c, { sig, scale, url: URL.createObjectURL(blob), pending: false });
+      if (old) setTimeout(() => URL.revokeObjectURL(old), 1000);
+      render(new Set(['view']));
+    }).catch(() => { c.pending = false; });
+}
+function updateNeighbours() {
+  const n = state.doc.pages.length;
+  const r = neighbourRects();
+  placeNeighbour(nbPrev, r.prev);
+  placeNeighbour(nbNext, r.next);
+  for (const id of [...nbCache.keys()]) if (!state.doc.pages.some((p) => p.id === id)) { const c = nbCache.get(id); if (c.url) URL.revokeObjectURL(c.url); nbCache.delete(id); }
+  // The page switcher steps aside while a panel is open (swiping still works).
+  pageNav.hidden = n < 2 || !document.getElementById('panel').hidden;
+  if (n >= 2) {
+    const i = M.currentPageIndex();
+    pageNav.querySelector('span').textContent = `${i + 1}/${n}`;
+    const [bp, bn] = pageNav.querySelectorAll('button');
+    bp.disabled = i === 0; bn.disabled = i === n - 1;
+  }
+}
+/** Moves to the previous (-1) or next (+1) page with a short slide. */
+export function goPage(dir) {
+  const P = state.doc.pages, i = M.currentPageIndex(), target = P[i + dir];
+  if (!target) return;
+  const r = neighbourRects()[dir < 0 ? 'prev' : 'next'];
+  const to = view.px - (r.x + r.w / 2 - ws.clientWidth / 2);
+  slideTo(to, () => { if (view.mode === 'custom') view.mode = 'fitPage'; M.selectPage(target.id); });
+}
+function slideTo(to, done) {
+  const from = view.px, t0 = performance.now(), dur = 200;
+  const step = (now) => {
+    const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+    view.px = from + (to - from) * e;
+    render(new Set(['view-pan']));
+    if (k < 1) requestAnimationFrame(step); else done();
+  };
+  requestAnimationFrame(step);
+}
+const fitted = () => view.mode === 'fitPage' || view.mode === 'fitWidth' || view.mode === 'swipe';
 
 function startRulerGuide(e, axis) {
   if (e.button > 0) return;
@@ -498,7 +592,19 @@ function onMove(e) {
     if (Math.hypot(dxs, dys) < 5) return;
     op.moved = true;
     clearTimeout(op.timer);
-    if (op.type !== 'pan') M.checkpoint();
+    // Sideways drag on a fitted page flips between pages — on empty space, or on an item that
+    // wasn't selected yet (tap an item first to drag it).
+    const sideways = fitted() && state.doc.pages.length > 1 && Math.abs(dxs) > Math.abs(dys);
+    if (sideways && (op.type === 'pan' || (op.type === 'move' && !op.wasSelected))) op.type = 'swipe';
+    if (op.type !== 'pan' && op.type !== 'swipe') M.checkpoint();
+  }
+  if (op.type === 'swipe') {
+    const { prev, next } = neighbours();
+    const resist = (dxs > 0 && !prev) || (dxs < 0 && !next) ? 0.3 : 1;
+    view.px = op.px + dxs * resist;
+    op.vx = dxs / Math.max(1, performance.now() - op.t);
+    render(new Set(['view-pan']));
+    return;
   }
   const dx = dxs / view.s, dy = dys / view.s;
 
@@ -562,6 +668,16 @@ function onUp(e) {
     M.emit('doc');
     return;
   }
+  if (o.type === 'swipe') {
+    const dx = view.px - o.px, W = ws.clientWidth;
+    const dir = dx < 0 ? 1 : -1;
+    const P = state.doc.pages, i = M.currentPageIndex();
+    const far = Math.abs(dx) > Math.min(90, W * 0.2) || Math.abs(dx) > 24 && performance.now() - o.t < 250;
+    if (e.type === 'pointerup' && far && P[i + dir]) goPage(dir);
+    else slideTo(o.px, () => render(new Set(['view'])));
+    return;
+  }
+  if (!o.moved && e.type === 'pointerup' && o.type === 'pan' && o.nb) { goPage(o.nb === 'prev' ? -1 : 1); return; }
   if (!o.moved && e.type === 'pointerup') {
     const now = performance.now();
     if (o.type === 'pan') {

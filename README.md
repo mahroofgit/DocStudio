@@ -9,15 +9,18 @@ Document layout and scan clean-up in the browser, built for iPhone (also works o
 - **Document library:** the app opens to Home with quick tools (Smart Scan, Import Images, Import Files, Blank Document), Recents and All Documents (search, sort by recent / created / name). Open, share, rename, duplicate or delete any document; each one is saved on the device as you work.
 - **Camera scanning** (big camera button): live viewfinder that outlines the paper as you aim, **Single** or **Batch** capture, grid, flash where supported, undo last shot, and import from Photos or Files. If the live camera isn't allowed, the iPhone camera is used instead.
 - **Page review** after scanning: go through the pages one by one: **Crop** (corner editor with loupe), **Rotate**, **Filter** (Original / Enhance / Gray / B&W with ink sensitivity, apply to all), **Retake**, **Delete**, drag to reorder, **Add** more. **Done** places one page per scan, fitted to the page, in a new document (or the open one when scanning from the editor).
+- **Document viewer:** opening a document shows its pages in one vertical scroll with a page counter, plus Add, Edit, Mark Up, Share and To Word. Tap a page (or Edit) to edit it.
+- **Side-by-side editor:** the page being edited sits between its neighbours. Swipe sideways (on empty space or an unselected item), tap a neighbour, or use the ‹ 2/5 › switcher to change page. Tap an item first to drag it. **Done** returns to the viewer.
 
-- **Scan Document / Scan Enhance:** the page edges are found, the perspective is straightened, the lighting is evened out, and the result is fitted to the current page using the Fit to Page rules (keep proportions, or fill the page when the aspect lock is off; margin respected). One undo reverts it.
-- **Edit Corners:** place the four corners yourself, with a magnifying loupe and a live preview.
+- **Scan Enhance:** adaptive clean-up only (lighting evened out, levels set from the photo). Your corners are left as they are.
+- **Auto Crop & Fit:** finds the page edges, straightens the perspective and fits the result to the current page using the Fit to Page rules (keep proportions, or fill the page when the aspect lock is off; margin respected). One undo reverts it.
+- **Edit Corners:** place the four corners yourself, with a magnifying loupe and a live preview. **Reset Corners** removes the correction.
 - **Adaptive scanning:** the lighting map is built only from areas that look like bare paper (logos, photos and shaded boxes keep their tone), and black / white levels are measured from each photo automatically.
-- **Document Scan filters:** Original / Color / B&W / Grayscale, B&W ink sensitivity (local threshold that keeps faint and thin strokes), hard 1-bit threshold, exposure, contrast, saturation, gamma, sharpness.
-- **Layout:** rulers with drag-out guides, snapping to guides, edges and centers, exact X / Y / W / H in mm, cm or in, aspect lock, size presets (passport 35 × 45 mm, 2 × 2 in, ID card, business card, 300 dpi), rotation, opacity, layers and align.
+- **Image adjustments** (Edit tab): presets (Original, Enhance, Lighten, Vivid, Photo, Gray, B&W) and sliders for exposure, brightness, contrast, saturation, gamma and sharpness; B&W ink sensitivity (local threshold that keeps faint and thin strokes) and hard 1-bit threshold.
+- **Layout:** rulers with drag-out guides (guide and snapping settings are in the ••• menu), snapping to guides, edges and centers, exact X / Y / W / H in mm, cm or in, aspect lock, size presets (passport 35 × 45 mm, 2 × 2 in, ID card, business card, 300 dpi), rotation, opacity, layers and align.
 - **Fit to Page:** *Keep proportions* scales the selection to fit inside the page and centers it; *Fill page* stretches it to the page exactly (handy for a photographed A4 / Letter form). Adjustable margin and *Restore Proportions*.
 - **Text boxes** with font, size, color and alignment.
-- **Markup** (like macOS Markup): Select, Text, Rectangle, Oval, Line, Arrow, Highlighter and Pen. Drag on the page to draw; *Perfect shapes* (or ⇧ on an iPad keyboard) makes squares, circles and 45° lines. Shapes and text return to Select when placed; the pen and highlighter stay on until you tap **Done**. Restyle a selection with color swatches, fill, line width, corner radius and arrowheads; new marks use the last style. The highlighter multiplies like a real marker. Shapes export as vectors in PDF.
+- **Markup** (like macOS Markup): Select, Text, Rectangle, Oval, Line, Arrow, Highlighter and Pen. Drag on the page to draw; *Perfect shapes* (or ⇧ on an iPad keyboard) makes squares, circles and 45° lines. Shapes and text return to Select when placed; the pen and highlighter stay on until you tap **Done**. Selected marks are edited in the Markup tab: Duplicate, Delete, color swatches, fill, line width, corner radius and arrowheads; new marks use the last style. The highlighter multiplies like a real marker. Shapes export as vectors in PDF.
 - **Long-press** an object for Duplicate, Bring to Front / Send to Back, Fit to Page, Stretch to Fill Page, Corner Unwarp, Scan Enhance and Delete. Long-press a page thumbnail for its page menu, or long-press and drag it to reorder.
 - **Status bar** with the finger / pointer position, the selection's size and the zoom; rulers mark guides and the pointer. Double-tap empty space to fit the page.
 - **Keyboard (iPad):** V T R O L A H P pick tools, Esc stops drawing, ⌫ deletes, arrows nudge (⇧ × 10), ⌘Z / ⇧⌘Z, ⌘D, ⌘+ / ⌘− / ⌘0.
@@ -41,7 +44,9 @@ Every push to `main` runs the tests and deploys through `.github/workflows/pages
 | `js/model.js` | pages / elements / guides, undo/redo, autosave, import, scan actions |
 | `js/scan-worker.js` | Web Worker: perspective unwarp, illumination flattening, filters, edge detection |
 | `js/imaging.js` | image import (EXIF orientation, DPI), proxies, preview cache, full-resolution renders |
-| `js/canvas.js` | touch canvas: move / resize / rotate, pinch zoom, rulers, guides, real-size zoom |
+| `js/home.js`, `js/viewer.js` | document library and the vertical page viewer |
+| `js/scanner.js`, `js/review.js` | camera capture and the page-by-page review |
+| `js/canvas.js` | touch canvas: move / resize / rotate, pinch zoom, side-by-side pages and swiping, rulers, guides, real-size zoom |
 | `js/ui.js`, `js/perspective.js` | panels (Edit, Markup, Scan, Pages), sheets (Add, View, Menu, context menus), corner editor |
 | `js/markup.js` | markup tools, styles and the shape / ink geometry used by the canvas and every exporter |
 | `js/export.js` | export engine: resolution / compression / colour mode, caches, size estimate, fit-under-N-MB, previews, PDF (pdf-lib, JPEG passed through, 1-bit images), DOCX, JPEG / PNG pages |

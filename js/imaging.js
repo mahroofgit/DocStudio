@@ -28,7 +28,7 @@ function call(msg, transfer = []) {
 // ------------------------------------------------------------------ helpers
 
 export function isIdentityScan(s) {
-  return !s || (s.mode === 'original' && s.exposure === 0 && s.contrast === 1 && s.saturation === 1 && s.gamma === 1 && s.sharpness === 0);
+  return !s || (s.mode === 'original' && s.exposure === 0 && !s.brightness && s.contrast === 1 && s.saturation === 1 && s.gamma === 1 && s.sharpness === 0);
 }
 
 export function newCanvas(w, h) {

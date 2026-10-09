@@ -22,13 +22,14 @@ export const DEFAULT_STYLE = Object.freeze({
 });
 export const HIGHLIGHT_ALPHA = 0.45;
 
-export const isMarkup = (el) => el && (el.kind === 'shape' || el.kind === 'ink');
+export const isMarkup = (el) => el && (el.kind === 'shape' || el.kind === 'ink' || el.kind === 'signature');
 export const isLinear = (s) => s.kind === 'line' || s.kind === 'arrow';
 export const arrowHeadLength = (lw) => Math.max(9, lw * 4.5);
 
 /** Extra room (points) around the frame that strokes and arrowheads can reach. */
 export function markupPad(el) {
   if (el.kind === 'shape') return el.shape.lineWidth + arrowHeadLength(el.shape.lineWidth) / 2;
+  if (el.kind === 'signature') return 1;
   return (el.ink?.lineWidth ?? 2) / 2 + 1;
 }
 
@@ -148,7 +149,29 @@ export function drawList(el, w, h, color = (c) => c) {
     const ink = el.ink;
     return [{ path: inkPath(ink, w, h), stroke: color(ink.color), width: ink.lineWidth, alpha: ink.highlighter ? HIGHLIGHT_ALPHA : 1, multiply: !!ink.highlighter }];
   }
+  if (el.kind === 'signature') return signatureOps(el.sig, w, h, color);
   return [];
+}
+
+// ------------------------------------------------------------------ signatures
+
+/**
+ * A signature is stored in a unit box (0…1 on both axes) so it scales with its frame:
+ *   { color, paths: [{ d: [[cmd, …numbers]], fill: true }]            typed (glyph outlines)
+ *            strokes: [[[x, y], …]], width }                           drawn (width = share of height)
+ */
+export function scaleCmds(cmds, w, h) {
+  return cmds.map((c) => {
+    const out = [c[0]];
+    for (let i = 1; i < c.length; i += 2) out.push(c[i] * w, c[i + 1] * h);
+    return out;
+  });
+}
+function signatureOps(sig, w, h, color) {
+  const col = color(sig.color || '#000000');
+  if (sig.paths) return [{ path: sig.paths.flatMap((p) => scaleCmds(p, w, h)), fill: col }];
+  const width = Math.max(0.3, (sig.width || 0.06) * h);
+  return sig.strokes.map((pts) => ({ path: smoothPath(pts.map(([x, y]) => [x * w, y * h])), stroke: col, width }));
 }
 
 // ------------------------------------------------------------------ emitters

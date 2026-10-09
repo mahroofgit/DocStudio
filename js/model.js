@@ -623,6 +623,31 @@ export function addInk(raw, highlighter) {
   return el.id;
 }
 
+/**
+ * Places a signature (unit-box geometry, see markup.js) on the current page, centered,
+ * `aspect` = width / height. `at` (page point) centers it there instead.
+ */
+export function addSignature(sig, aspect, at) {
+  const page = currentPage();
+  let w = Math.min(page.w * 0.36, 170), h = w / aspect;
+  if (h > 60) { h = 60; w = h * aspect; }
+  const [cx, cy] = at || [page.w / 2, page.h * 0.62];
+  const el = {
+    id: uid(), kind: 'signature', x: cx - w / 2, y: cy - h / 2, w, h, rotation: 0, aspectLocked: true, opacity: 1,
+    name: 'Signature', sig: JSON.parse(JSON.stringify(sig)),
+  };
+  checkpoint();
+  page.elements.push(el);
+  state.ui.selId = el.id;
+  emit('doc', 'sel');
+  return el.id;
+}
+
+export function updateSignature(id, patch) {
+  checkpointCoalesced('sig-' + id + Object.keys(patch).join());
+  updateElement(id, (e) => { if (e.sig) Object.assign(e.sig, patch); });
+}
+
 export function updateShape(id, patch) {
   checkpointCoalesced('shape-' + id + Object.keys(patch).join());
   updateElement(id, (e) => { if (e.shape) Object.assign(e.shape, patch); });

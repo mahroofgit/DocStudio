@@ -635,3 +635,49 @@ body.modal-open { overflow: hidden; }
 .rv-tools button { display: flex; flex-direction: column; align-items: center; gap: 3px; color: #ddd; font-size: 11.5px; padding: 6px 0; }
 .rv-tools button.on { color: #6cc0ff; }
 .rv-tools svg.i { width: 24px; height: 24px; }
+
+/* ---------------------------------------------------------------- signatures */
+.sig-saved-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.sig-saved { position: relative; }
+.sig-use, .sig-new {
+  height: 52px; min-width: 96px; max-width: 100%; padding: 6px 14px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
+  background: #fff; border: 1px solid var(--hairline); box-shadow: 0 1px 2px rgba(0,0,0,.06); overflow: hidden;
+}
+.sig-use svg { max-width: 150px; height: auto; max-height: 36px; }
+.sig-new { gap: 6px; background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; font-size: 14px; }
+.sig-new svg.i { width: 18px; height: 18px; }
+.sig-del {
+  position: absolute; top: -7px; right: -7px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--surface-2); color: var(--text-2); border: 1px solid var(--hairline);
+}
+.sig-del svg.i { width: 12px; height: 12px; }
+
+#sigpad {
+  position: fixed; inset: 0; z-index: 52; background: var(--bg); display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr);
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+}
+#sigpad > header { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid var(--hairline); }
+#sigpad > header h2 { font-size: 17px; margin: 0; }
+#sigpad > header .btn.ghost { background: transparent; color: var(--accent); }
+#sigpad > header .btn.primary { min-height: 36px; padding: 0 18px; }
+.sig-body { overflow-y: auto; padding: 14px 16px 24px; display: flex; flex-direction: column; gap: 14px; }
+.sig-body > * { width: 100%; max-width: 720px; margin-left: auto; margin-right: auto; }
+.sig-pad {
+  position: relative; height: min(46vh, 300px); border-radius: 14px; background: #fff; border: 1px solid var(--hairline);
+  box-shadow: 0 1px 3px rgba(0,0,0,.08); touch-action: none; overflow: hidden;
+}
+.sig-canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+.sig-line { position: absolute; left: 18px; right: 18px; bottom: 28%; border-bottom: 1.5px solid #c9d3de; pointer-events: none; }
+.sig-line span { position: absolute; left: 0; bottom: 4px; color: #9aa7b4; font-size: 20px; }
+.sig-hint { position: absolute; inset: 0; display: grid; place-items: center; color: #aab5c1; font-size: 17px; pointer-events: none; }
+.sig-tools { margin: 10px 0 0; flex-wrap: nowrap; }
+.sig-colors { display: flex; gap: 10px; }
+.sig-colors .swatch { width: 30px; height: 30px; border-radius: 50%; border: 2px solid transparent; box-shadow: 0 0 0 1px var(--hairline); }
+.sig-colors .swatch.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
+.sig-type .text-input { width: 100%; height: 46px; border: 0; border-radius: 12px; background: var(--surface-2); padding: 0 14px; font-size: 17px; outline: none; color: var(--text); }
+.sig-fonts { display: grid; gap: 8px; margin-top: 12px; }
+.sig-font {
+  height: 72px; border-radius: 12px; background: #fff; border: 1.5px solid var(--hairline); padding: 0 16px; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1;
+}
+.sig-font.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }

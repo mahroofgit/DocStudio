@@ -214,7 +214,7 @@ function updateNode(n, el, s) {
   st.transform = el.rotation ? `rotate(${el.rotation}deg)` : '';
   st.opacity = el.opacity ?? 1;
   if (isMarkup(el)) {
-    const key = JSON.stringify([el.shape || el.ink, el.w, el.h, s]);
+    const key = JSON.stringify([el.shape || el.ink || el.sig, el.w, el.h, s]);
     if (n.key !== key) {
       n.key = key;
       // Strokes may reach outside the frame (line caps, arrowheads): the SVG overflows visibly.

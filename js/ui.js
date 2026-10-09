@@ -13,12 +13,13 @@ import { renderPage } from './render.js';
 import { openExporter } from './exportui.js';
 import { openCornerEditor } from './perspective.js';
 import { TOOLS, PALETTE, tool as toolInfo, isMarkup } from './markup.js';
+import { createSignature, savedSignatures, deleteSignature, saveSignature, signatureSVG, onSavedChange, SIG_COLORS } from './signature.js';
 import { pointerPos } from './canvas.js';
 import { startScan, importToReview } from './scanner.js';
 import { showHome, setHomeHooks } from './home.js';
 import { showViewer, setViewerHooks } from './viewer.js';
 
-export const APP_VERSION = '1.5.0';
+export const APP_VERSION = '1.6.0';
 const $ = (s) => document.querySelector(s);
 
 // ------------------------------------------------------------------ DOM helpers
@@ -323,6 +324,7 @@ function elementIcon(el) {
   if (el.kind === 'pdf') return 'file';
   if (el.kind === 'shape') return { rectangle: 'rect', ellipse: 'oval', line: 'line', arrow: 'arrow' }[el.shape.kind];
   if (el.kind === 'ink') return el.ink.highlighter ? 'highlighter' : 'pen';
+  if (el.kind === 'signature') return 'sign';
   return 'photo';
 }
 
@@ -544,8 +546,15 @@ function buildMarkupPanel(body, title) {
     return [t.id, b];
   });
   refresh(() => buttons.forEach(([id, b]) => b.classList.toggle('on', state.ui.tool === id)));
-  body.append(section(null, strip,
-    toggle('Perfect shapes (squares, circles, 45° lines)', () => state.ui.constrain, (v) => { state.ui.constrain = v; M.setPref('constrain', v); })));
+  const perfect = toggle('Perfect shapes (squares, circles, 45° lines)', () => state.ui.constrain, (v) => { state.ui.constrain = v; M.setPref('constrain', v); });
+  if (sel && sel.kind === 'signature') {
+    body.append(section(null, strip), signatureStyleSection(sel));
+    const cur = () => M.findElement(sel.id)?.el;
+    body.append(opacitySection(sel.id, cur), rotationSection(sel.id, cur), arrangeSection(false));
+    return;
+  }
+  if (sel) body.append(section(null, strip, perfect), signatureSection());
+  else body.append(section(null, strip), signatureSection(), section(null, perfect));
   if (sel && isMarkup(sel)) {
     markupStyleSection(body);
     const cur = () => M.findElement(sel.id)?.el;
@@ -557,6 +566,62 @@ function buildMarkupPanel(body, title) {
       ? 'Tap the page to add a text box, or drag to draw its frame.'
       : 'Pick a tool, then drag on the page to draw. Select a shape or drawing to restyle it. Shapes and text return to Select when placed; the pen and highlighter stay on until you tap Done.')));
   }
+}
+
+// ---- Signatures
+
+/** Places a signature record on the current page and selects it. */
+function placeSignature(rec) {
+  if (state.ui.tool !== 'select') M.setTool('select');
+  M.addSignature(rec.sig, rec.aspect);
+}
+
+/** Saved signatures (tap to place) and New Signature. */
+function signatureSection() {
+  const list = h('div', { class: 'sig-saved-list' });
+  const fill = async () => {
+    const all = await savedSignatures();
+    if (!list.isConnected && list.dataset.filled) return;
+    list.dataset.filled = '1';
+    list.replaceChildren(...all.map((rec) => h('div', { class: 'sig-saved' },
+      h('button', { class: 'sig-use', 'aria-label': 'Place saved signature', html: signatureSVG(rec, 30), onclick: () => placeSignature(rec) }),
+      h('button', { class: 'sig-del', 'aria-label': 'Delete saved signature', html: icon('close'),
+        onclick: () => confirmDialog('Delete this saved signature? Signatures already placed in documents stay.', 'Delete', () => deleteSignature(rec.id), true) }))),
+    h('button', { class: 'sig-new', onclick: async () => { const rec = await createSignature(); if (rec) placeSignature(rec); }, html: icon('plus') + '<span>New Signature</span>' }));
+  };
+  fill();
+  const off = onSavedChange(() => { if (list.isConnected) fill(); else off(); });
+  return section('Signature', list,
+    h('p', { class: 'muted small', style: { margin: '6px 0 2px' } }, 'Draw or type a signature. Saved signatures stay on this device for any document.'));
+}
+
+function signatureStyleSection(el0) {
+  const id = el0.id;
+  const S = () => M.findElement(id)?.el.sig || el0.sig;
+  const wrap = h('div', { class: 'swatches' });
+  const sw = [...SIG_COLORS, ...PALETTE.filter((c) => !SIG_COLORS.includes(c))].map((c) => {
+    const b = h('button', { class: 'swatch', 'aria-label': `Colour ${c}`, style: { background: c }, onclick: () => M.updateSignature(id, { color: c }) });
+    wrap.append(b);
+    return [c, b];
+  });
+  refresh(() => sw.forEach(([c, b]) => b.classList.toggle('on', (S().color || '#000000') === c)));
+  const kids = [h('div', { class: 'cap' }, 'Colour'), wrap];
+  if (S().strokes) {
+    kids.push(slider({ label: 'Thickness', min: 0.5, max: 3, step: 0.05, neutral: 1,
+      get: () => (S().width || 0.06) / (S().baseWidth || S().width || 0.06),
+      set: (v) => { const base = S().baseWidth || S().width || 0.06; M.updateSignature(id, { baseWidth: base, width: base * v }); },
+      fmt: (v) => `${Math.round(v * 100)}%` }));
+  }
+  kids.push(h('div', { class: 'row', style: { marginTop: '8px' } },
+    btn(icon('plus') + 'Save for Reuse', async () => {
+      const el = M.findElement(id)?.el;
+      if (!el) return;
+      const sig = JSON.parse(JSON.stringify(el.sig));
+      delete sig.baseWidth;
+      await saveSignature({ id: `sig-${Date.now().toString(36)}`, created: Date.now(), aspect: el.w / el.h, sig });
+      toast('Saved — it’s in Markup → Signature for any document');
+    })));
+  return section('Signature', ...kids);
 }
 
 /**

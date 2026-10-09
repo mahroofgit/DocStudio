@@ -22,6 +22,7 @@ Document layout and scan clean-up in the browser, built for iPhone (also works o
 - **Fit to Page:** *Keep proportions* scales the selection to fit inside the page and centers it; *Fill page* stretches it to the page exactly (handy for a photographed A4 / Letter form). Adjustable margin and *Restore Proportions*.
 - **Text boxes** with font, size, color and alignment.
 - **Markup** (like macOS Markup): Select, Text, Rectangle, Oval, Line, Arrow, Highlighter and Pen. Drag on the page to draw; *Perfect shapes* (or ⇧ on an iPad keyboard) makes squares, circles and 45° lines. Shapes and text return to Select when placed; the pen and highlighter stay on until you tap **Done**. Selected marks are edited in the Markup tab: Duplicate, Delete, color swatches, fill, line width, corner radius and arrowheads; new marks use the last style. The highlighter multiplies like a real marker. Shapes export as vectors in PDF.
+- **Signatures** (Markup → Signature): draw one with your finger or type your name in one of four handwriting fonts, in black, blue, green or red. It's placed on the page as a vector (sharp in PDF), can be moved, resized, recoloured and thickened, and saved signatures (up to 8, on this device) can be placed in any document with one tap.
 - **Long-press** an object for Duplicate, Bring to Front / Send to Back, Fit to Page, Stretch to Fill Page, Corner Unwarp, Scan Enhance and Delete. Long-press a page thumbnail for its page menu, or long-press and drag it to reorder.
 - **Status bar** with the finger / pointer position, the selection's size and the zoom; rulers mark guides and the pointer. Double-tap empty space to fit the page.
 - **Keyboard (iPad):** V T R O L A H P pick tools, Esc stops drawing, ⌫ deletes, arrows nudge (⇧ × 10), ⌘Z / ⇧⌘Z, ⌘D, ⌘+ / ⌘− / ⌘0.
@@ -47,6 +48,7 @@ Every push to `main` runs the tests and deploys through `.github/workflows/pages
 | `js/imaging.js` | image import (EXIF orientation, DPI), proxies, preview cache, full-resolution renders |
 | `js/home.js`, `js/viewer.js` | document library and the vertical page viewer |
 | `js/resizer.js` | Resize Image tool |
+| `js/signature.js` | signature pad (draw / type), saved signatures |
 | `js/scanner.js`, `js/review.js` | camera capture and the page-by-page review |
 | `js/canvas.js` | touch canvas: move / resize / rotate, pinch zoom, side-by-side pages and swiping, rulers, guides, real-size zoom |
 | `js/ui.js`, `js/perspective.js` | panels (Edit, Markup, Scan, Pages), sheets (Add, View, Menu, context menus), corner editor |
@@ -57,4 +59,4 @@ Every push to `main` runs the tests and deploys through `.github/workflows/pages
 | `js/ocr.js` | searchable-PDF text recognition (Tesseract, English, on device) |
 | `js/png.js`, `js/zip.js` | 1-bit / 8-bit grayscale PNG encoder, zlib, ZIP writer |
 | `tests/` | scan pipeline tests (ported from the Mac app) and crypto tests: `node tests/scan.test.js` |
-| `vendor/` | pdf.js 3.11 (Apache-2.0), pdf-lib 1.17 (MIT), tesseract.js 6 + English data (Apache-2.0), licenses included |
+| `vendor/` | pdf.js 3.11 (Apache-2.0), pdf-lib 1.17 (MIT), tesseract.js 6 + English data (Apache-2.0), opentype.js 1.3 (MIT), signature fonts Great Vibes, Dancing Script, Homemade Apple, Mr Dafoe (OFL), licenses included |

@@ -8,6 +8,7 @@ import { h, btn, sheet, sheetItem, toast, alertDialog, confirmDialog, promptDial
 import { UNIT_ORDER } from './geometry.js';
 import { startScan, importToReview } from './scanner.js';
 import { showViewer, hideViewer } from './viewer.js';
+import { startResize } from './resizer.js';
 
 const $ = (s) => document.querySelector(s);
 let tab = 'home', query = '', sortBy = localStorage.getItem('docSort') || 'modified';
@@ -122,12 +123,14 @@ function toolsGrid(compact) {
     tool('photo', 'Import Images', () => $('#home-pick-images').click(), 'c2'),
     tool('file', 'Import Files', () => $('#home-pick-files').click(), 'c3'),
     tool('pageAdd', 'Blank Document', async () => { await M.createDocument('Untitled'); hideHome(); }, 'c4'),
+    tool('resize', 'Resize Image', () => startResize(), 'c9'),
+    tool('rect', 'ID Photo / Card', async () => { await M.createDocument('ID photos'); hideHome(); toast('Add a photo, then pick a size in Edit → Size presets (passport 35 × 45 mm, 2 × 2 in, ID card).', 5000); }, 'c5'),
+    tool('pdf', 'PDF to Word', () => toast('Open a PDF, tap Export and choose Word.'), 'c7'),
   ];
-  if (!compact) {
+  if (compact) items.push(tool('menu', 'All Tools', () => { tab = 'tools'; render(); }, 'c8'));
+  else {
     items.push(
-      tool('rect', 'ID Photo / Card', async () => { await M.createDocument('ID photos'); hideHome(); toast('Add a photo, then pick a size in Edit → Size presets (passport 35 × 45 mm, 2 × 2 in, ID card).', 5000); }, 'c5'),
       tool('markup', 'Sign & Mark Up', () => toast('Open a document, then tap Markup.'), 'c6'),
-      tool('pdf', 'PDF to Word', () => toast('Open a PDF, tap Export and choose Word.'), 'c7'),
       tool('ruler', 'Calibrate', () => openCalibration(), 'c8'));
   }
   return h('div', { class: 'qtools' }, ...items);

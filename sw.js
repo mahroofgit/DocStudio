@@ -4,14 +4,14 @@
 // version, and the cached copy is only used offline. Large vendor files and icons never change
 // for a given path, so they're cache-first. This works the same whether the site is published
 // by the Actions workflow or by GitHub's branch build.
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const CACHE = `docprint-${VERSION}`;
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/main.js', 'js/ui.js', 'js/canvas.js', 'js/model.js', 'js/geometry.js', 'js/imaging.js',
   'js/pdfsupport.js', 'js/render.js', 'js/export.js', 'js/exportui.js', 'js/zip.js', 'js/store.js',
   'js/icons.js', 'js/perspective.js', 'js/scan-worker.js', 'js/png.js', 'js/pdfcrypt.js', 'js/ocr.js',
-  'js/markup.js', 'js/home.js', 'js/viewer.js', 'js/scanner.js', 'js/review.js',
+  'js/markup.js', 'js/home.js', 'js/viewer.js', 'js/resizer.js', 'js/scanner.js', 'js/review.js',
   'vendor/pdf.min.js', 'vendor/pdf.worker.min.js', 'vendor/pdf-lib.min.js',
   'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/favicon-32.png',
 ];

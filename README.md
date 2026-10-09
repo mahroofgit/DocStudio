@@ -9,6 +9,7 @@ Document layout and scan clean-up in the browser, built for iPhone (also works o
 - **Document library:** the app opens to Home with quick tools (Smart Scan, Import Images, Import Files, Blank Document), Recents and All Documents (search, sort by recent / created / name). Open, share, rename, duplicate or delete any document; each one is saved on the device as you work.
 - **Camera scanning** (big camera button): live viewfinder that outlines the paper as you aim, **Single** or **Batch** capture, grid, flash where supported, undo last shot, and import from Photos or Files. If the live camera isn't allowed, the iPhone camera is used instead.
 - **Page review** after scanning: go through the pages one by one: **Crop** (corner editor with loupe), **Rotate**, **Filter** (Original / Enhance / Gray / B&W with ink sensitivity, apply to all), **Retake**, **Delete**, drag to reorder, **Add** more. **Done** places one page per scan, fitted to the page, in a new document (or the open one when scanning from the editor).
+- **Resize Image** (Home): resize one photo or a batch by dimensions (px, mm, cm or in, with or without keeping proportions; *Crop to fill*, *Fit inside* or *Stretch* for fixed sizes) or by percentage. Set the print resolution (DPI, written into the file), use presets (passport 35 × 45 mm, 2 × 2 in, 4 × 6 in, 5 × 7 in, A4, square 1080 px, Full HD, email 1200 px), and save as JPEG, PNG or WebP with a quality slider and *Max size … KB*. The preview shows the actual output and its file size.
 - **Document viewer:** opening a document shows its pages in one vertical scroll with a page counter, plus Add, Edit, Mark Up, Share and To Word. Tap a page (or Edit) to edit it.
 - **Side-by-side editor:** the page being edited sits between its neighbours. Swipe sideways (on empty space or an unselected item), tap a neighbour, or use the ‹ 2/5 › switcher to change page. Tap an item first to drag it. **Done** returns to the viewer.
 
@@ -45,6 +46,7 @@ Every push to `main` runs the tests and deploys through `.github/workflows/pages
 | `js/scan-worker.js` | Web Worker: perspective unwarp, illumination flattening, filters, edge detection |
 | `js/imaging.js` | image import (EXIF orientation, DPI), proxies, preview cache, full-resolution renders |
 | `js/home.js`, `js/viewer.js` | document library and the vertical page viewer |
+| `js/resizer.js` | Resize Image tool |
 | `js/scanner.js`, `js/review.js` | camera capture and the page-by-page review |
 | `js/canvas.js` | touch canvas: move / resize / rotate, pinch zoom, side-by-side pages and swiping, rulers, guides, real-size zoom |
 | `js/ui.js`, `js/perspective.js` | panels (Edit, Markup, Scan, Pages), sheets (Add, View, Menu, context menus), corner editor |

@@ -375,7 +375,7 @@ export function openExporter(format) {
 
 // ------------------------------------------------------------------ sharing
 
-async function shareFiles(files) {
+export async function shareFiles(files) {
   if (navigator.canShare && navigator.canShare({ files })) {
     try { await navigator.share({ files, title: files.length === 1 ? files[0].name : undefined }); return; }
     catch (e) { if (e.name === 'AbortError') return; }

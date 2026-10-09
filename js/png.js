@@ -46,7 +46,7 @@ export function packBits(gray, w, h) {
   return { bits: out, rowBytes };
 }
 
-function chunk(type, data) {
+export function chunk(type, data) {
   const out = new Uint8Array(12 + data.length);
   const v = new DataView(out.buffer);
   v.setUint32(0, data.length);

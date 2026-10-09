@@ -41,6 +41,7 @@ const P = {
   doc: '<path d="M14 3H7.5A2.5 2.5 0 005 5.5v13A2.5 2.5 0 007.5 21h9a2.5 2.5 0 002.5-2.5V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>',
   word: '<path d="M14 3H7.5A2.5 2.5 0 005 5.5v13A2.5 2.5 0 007.5 21h9a2.5 2.5 0 002.5-2.5V8z"/><path d="M14 3v5h5"/><path d="M8.5 11.5l1.3 6 2.2-4.5 2.2 4.5 1.3-6"/>',
   pdf: '<path d="M14 3H7.5A2.5 2.5 0 005 5.5v13A2.5 2.5 0 007.5 21h9a2.5 2.5 0 002.5-2.5V8z"/><path d="M14 3v5h5"/><path d="M8.5 17.5v-5h1.8a1.5 1.5 0 010 3H8.5"/>',
+  resize: '<rect x="3" y="10" width="11" height="11" rx="1.5"/><path d="M10 3h10v10" stroke-dasharray="2.2 2.2"/><path d="M13 11l7-7M15 4h5v5"/>',
   fit: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>',
   fitW: '<path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/>',
   zoomIn: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M8 11h6M11 8v6"/>',

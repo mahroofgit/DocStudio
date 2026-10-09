@@ -18,7 +18,7 @@ import { startScan, importToReview } from './scanner.js';
 import { showHome, setHomeHooks } from './home.js';
 import { showViewer, setViewerHooks } from './viewer.js';
 
-export const APP_VERSION = '1.4.0';
+export const APP_VERSION = '1.5.0';
 const $ = (s) => document.querySelector(s);
 
 // ------------------------------------------------------------------ DOM helpers
